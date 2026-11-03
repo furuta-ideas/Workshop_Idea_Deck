@@ -77,7 +77,7 @@ export function createApp(config = configuration(), overrides = {}) {
   let remoteWrite = false;
   const available = () =>
     requireThat(
-      !notion.running && !remoteWrite,
+      !notion.running && !notion.authorityRunning && !remoteWrite && !notion.content.active.size,
       'Notionと同期しています。少し待って再操作してください',
       409,
     );
@@ -140,6 +140,7 @@ export function createApp(config = configuration(), overrides = {}) {
         const assets = {
           '/': 'public/index.html',
           '/app.js': 'public/app.js',
+          '/build-info.js': 'public/build-info.js',
           '/style.css': 'public/style.css',
           '/WorkShop_Top.png': 'public/WorkShop_Top.png',
           '/webauthn.js': 'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js',
@@ -330,7 +331,6 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'advice' && req.method === 'POST') {
-        available();
         rateLimit(store, `facilitation:${user.email}`, 40, 600000);
         json(res, await facilitator.advise(ws, user, body));
         return;
@@ -340,25 +340,30 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'action' && req.method === 'POST') {
-        available();
-        json(res, view(await remote(() => notion.content.change(user, wsId, body)), user));
+        if (body.action === 'addTeam') available();
+        json(res, view(await notion.content.change(user, wsId, body), user));
         return;
       }
       if (route === 'content-activity' && req.method === 'POST') {
-        available();
         json(res, notion.content.activity(user, wsId, body.teamId));
         return;
       }
       if (route === 'content-sync' && req.method === 'POST') {
-        available();
         access(store, ws, user, true);
         if (body.reload) {
+          available();
           requireThat(user.admin, '管理者のみ操作できます', 403);
           store.put('kv', `notion-pending-backup:${ws.id}:${Date.now()}`, structuredClone(ws));
-          ws.documentSync = { pending: false };
-          await remote(() => notion.content.pull(ws, undefined, true));
-          store.put('workshops', ws.id, ws);
-        } else await remote(() => notion.content.retry(ws));
+          const reloaded = await remote(() =>
+            notion.content.pull(ws, undefined, true, { discardPending: true }),
+          );
+          requireThat(
+            reloaded && !ws.documentSync?.error,
+            ws.documentSync?.error ||
+              '再読込み中に編集がありました。編集は保存されています。内容を確認して再操作してください',
+            409,
+          );
+        } else notion.content.requestRetry(wsId);
         json(res, view(store.get('workshops', ws.id), user));
         return;
       }
@@ -449,7 +454,6 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'ai' && req.method === 'POST') {
-        available();
         access(store, ws, user, true);
         const team = teamFor(ws, user, body.teamId);
         rateLimit(store, `ai:${user.email}`, 30, 600000);
@@ -493,7 +497,6 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'apply' && req.method === 'POST') {
-        available();
         access(store, ws, user, true);
         const p = store.get('challenges', body.proposal);
         requireThat(
@@ -551,17 +554,7 @@ export function createApp(config = configuration(), overrides = {}) {
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);
         if (ws.notion && notion.content.state(ws)?.doc) {
-          if (
-            p.task === 'classify' ||
-            (p.task === 'transcribe' && p.destination === 'map') ||
-            ws.documentSync?.queued
-          )
-            ws = notion.content.schedule(ws);
-          else {
-            ws.documentSync = { ...ws.documentSync, pending: true };
-            store.put('workshops', ws.id, ws);
-            ws = await remote(() => notion.content.push(ws));
-          }
+          ws = notion.content.schedule(ws);
         }
         json(res, view(ws, user));
         return;
@@ -583,10 +576,12 @@ export function createApp(config = configuration(), overrides = {}) {
   });
   let interval, contentInterval, contentTask;
   const flushContent = () => {
-    if (notion.running || remoteWrite || contentTask) return;
+    if (contentTask) return contentTask;
+    if (remoteWrite) return;
     const due = notion.content.due();
     if (!due) return;
-    contentTask = remote(() => notion.content.flushScheduled(due.id))
+    contentTask = notion.content
+      .flushScheduled(due.id)
       .catch((e) => console.error('Notion content:', e.message))
       .finally(() => {
         contentTask = null;
@@ -594,7 +589,8 @@ export function createApp(config = configuration(), overrides = {}) {
     return contentTask;
   };
   const maintenance = () => {
-    if (notion.running || remoteWrite) return;
+    if (remoteWrite) return;
+    if (notion.running) return notion.refreshAuthority();
     for (const ws of store.all('workshops')) expire(store, ws);
     const syncing = notion.enabled()
       ? notion.sync().catch((e) => console.error('Notion:', e.message))
@@ -634,6 +630,7 @@ export function createApp(config = configuration(), overrides = {}) {
       clearInterval(contentInterval);
       await new Promise((r) => server.close(r));
       await notion.running;
+      await notion.authorityRunning;
       await contentTask;
       store.close();
     },

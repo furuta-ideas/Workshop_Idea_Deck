@@ -1,9 +1,11 @@
 import { mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import './stamp-build.js';
 const target = resolve('.cloudflare-assets');
 for (const file of [
   'index.html',
   'app.js',
+  'build-info.js',
   'style.css',
   'WorkShop_Top.png',
   'fonts/BIZUDPGothic-Regular.ttf',

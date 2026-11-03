@@ -94,6 +94,42 @@ test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちで�
   assert.equal(externalCalls, 0);
 });
 
+test('HTTP: Notionの読取り・送信が進行中でも編集と活動通知を拒否しない', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test'),
+    w = newWorkshop('同期中の編集', 'admin@example.test'),
+    team = Object.values(w.teams)[0];
+  w.notion = { pageId: 'fixture-page', checkedAt: Date.now() };
+  w.documentSync = { pending: true, syncing: true, generation: 1, error: null };
+  f.app.store.put('workshops', w.id, w);
+  f.app.store.put('kv', `notion-content:${w.id}`, { doc: { sections: {} } });
+  f.app.notion.running = Promise.resolve();
+  f.app.notion.content.active.set(w.id, Promise.resolve());
+  try {
+    const response = await f.req(
+      `/api/workshops/${w.id}/action`,
+      {
+        action: 'createTopic',
+        payload: { teamId: team.id, placement: 'main', text: '同期完了を待たず保存' },
+        revision: w.revision,
+        requestId: id(),
+      },
+      admin,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.body.documentSync.syncing, true);
+    assert.equal(response.body.documentSync.generation, 2);
+    assert.equal(response.body.teams[team.id].nodes[0].text, '同期完了を待たず保存');
+    assert.equal(
+      (await f.req(`/api/workshops/${w.id}/content-activity`, { teamId: team.id }, admin)).status,
+      200,
+    );
+  } finally {
+    f.app.notion.running = null;
+    f.app.notion.content.active.clear();
+  }
+});
+
 test('HTTP: mdは管理者だけ編集可能。全チーム閲覧と越境変更・AIの拒否、分類確認と取り消し', async (t) => {
   const f = await setup(t),
     admin = await f.login('admin@example.test');

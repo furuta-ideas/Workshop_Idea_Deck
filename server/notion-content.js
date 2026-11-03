@@ -1,6 +1,7 @@
 import { hash } from './store.js';
 import { requireThat, mutate, totals, access, teamFor } from './domain.js';
 import { validatePNG } from './png.js';
+import { outboxKey, snapshotStore, mergeBlockIds, preserveLocalContent } from './notion-outbox.js';
 
 export const stageTitles = [
   '① もやもやの言語化（N1）',
@@ -69,15 +70,6 @@ const payload = (type, text, color = 'default') => ({
   },
 });
 const snapshotMarker = 'Workshop Idea Deck state v1';
-const mapActions = new Set([
-  'node',
-  'createTopic',
-  'topicTheme',
-  'reparent',
-  'standalone',
-  'deleteNode',
-  'undoClassification',
-]);
 const idleMilliseconds = 10000;
 const applyBlockUpdate = (block, body) => {
   const type = block.type,
@@ -90,6 +82,8 @@ export class NotionContent {
     this.notion = notion;
     this.store = notion.store;
     this.loaded = new Set();
+    this.active = new Map();
+    this.reading = new Set();
   }
   state(ws) {
     return this.store.get('kv', `notion-content:${ws.id}`);
@@ -97,14 +91,15 @@ export class NotionContent {
   save(ws, state) {
     this.store.put('kv', `notion-content:${ws.id}`, state);
   }
-  schedule(ws, now = Date.now()) {
+  schedule(ws, now = Date.now(), changed = true) {
     ws.documentSync = {
       ...ws.documentSync,
       pending: true,
       queued: true,
-      syncing: false,
+      syncing: this.active.has(ws.id),
       dueAt: now + idleMilliseconds,
-      error: null,
+      generation: (ws.documentSync?.generation || 0) + (changed ? 1 : 0),
+      error: ws.documentSync?.error || null,
     };
     this.store.put('workshops', ws.id, ws);
     return ws;
@@ -113,32 +108,123 @@ export class NotionContent {
     const ws = this.store.get('workshops', wsId);
     access(this.store, ws, user, true);
     teamFor(ws, user, teamId);
-    if (ws.documentSync?.queued && !ws.documentSync.error) this.schedule(ws, now);
+    if (ws.documentSync?.queued) this.schedule(ws, now, false);
     return { queued: !!ws.documentSync?.queued };
   }
   due(now = Date.now()) {
     return this.store
       .all('workshops')
-      .find(
+      .filter(
         (ws) =>
           ws.notion &&
           ws.documentSync?.queued &&
           !ws.documentSync.error &&
-          ws.documentSync.dueAt <= now,
-      );
+          ws.documentSync.dueAt <= now &&
+          !this.active.has(ws.id) &&
+          !this.reading.has(ws.id),
+      )
+      .sort((a, b) => a.documentSync.dueAt - b.documentSync.dueAt)[0];
   }
   recoverScheduled(now = Date.now()) {
     for (const ws of this.store.all('workshops'))
-      if (ws.notion && ws.documentSync?.syncing && !ws.documentSync.error) this.schedule(ws, now);
+      if (ws.notion && ws.documentSync?.syncing && !ws.documentSync.error)
+        this.schedule(ws, now, false);
   }
-  async flushScheduled(wsId, now = Date.now()) {
+  async flushScheduled(wsId, now = Date.now(), force = false) {
+    if (this.active.has(wsId)) return this.active.get(wsId);
     const ws = this.store.get('workshops', wsId);
-    if (!ws?.documentSync?.queued || ws.documentSync.error || ws.documentSync.dueAt > now)
+    if (
+      this.reading.has(wsId) ||
+      !ws ||
+      (!force && (!ws.documentSync?.queued || ws.documentSync.error || ws.documentSync.dueAt > now))
+    )
       return ws;
-    ws.documentSync = { ...ws.documentSync, queued: false, syncing: true };
-    ws.revision++;
+    const job = this.store.get('kv', outboxKey(wsId)) || {
+      generation: ws.documentSync?.generation || 0,
+      workshop: structuredClone(ws),
+    };
+    this.store.put('kv', outboxKey(wsId), job);
+    ws.documentSync = {
+      ...ws.documentSync,
+      queued: (ws.documentSync?.generation || 0) > job.generation,
+      syncing: true,
+      pending: true,
+      error: null,
+    };
     this.store.put('workshops', ws.id, ws);
-    return this.push(ws);
+    const work = this.sendSnapshot(job);
+    this.active.set(wsId, work);
+    try {
+      return await work;
+    } finally {
+      this.active.delete(wsId);
+    }
+  }
+  async sendSnapshot(job) {
+    const sender = new NotionContent(this.notion);
+    sender.store = snapshotStore(this.store, job);
+    let sent;
+    try {
+      sent = await sender.push(structuredClone(job.workshop));
+    } catch (e) {
+      sent = job.workshop;
+      sent.documentSync = { ...sent.documentSync, pending: true, error: e.message };
+    }
+    const live = this.store.get('workshops', sent.id);
+    mergeBlockIds(live, sent);
+    const newer = (live.documentSync?.generation || 0) > job.generation;
+    if (!sent.documentSync?.error) {
+      live.notion.baseEdited = sent.notion.baseEdited;
+      this.store.del('kv', outboxKey(sent.id));
+    }
+    live.documentSync = {
+      ...live.documentSync,
+      syncing: false,
+      pending: !!sent.documentSync?.error || newer,
+      queued: newer || !!sent.documentSync?.error,
+      error: sent.documentSync?.error || null,
+      ...(!sent.documentSync?.error ? { at: Date.now() } : {}),
+    };
+    this.store.put('workshops', live.id, live);
+    return live;
+  }
+  requestRetry(wsId, now = Date.now()) {
+    const ws = this.store.get('workshops', wsId);
+    if (this.active.has(wsId)) return ws;
+    ws.documentSync = { ...ws.documentSync, error: null };
+    this.schedule(ws, now, false);
+    ws.documentSync.dueAt = now;
+    this.store.put('workshops', wsId, ws);
+    return ws;
+  }
+  preserveIncoming(ws, baseline, metadataOnly = false) {
+    const live = this.store.get('workshops', ws.id);
+    if (live?.documentSync?.at > (baseline.documentSync?.at || 0) && live.notion?.baseEdited)
+      ws.notion.baseEdited = live.notion.baseEdited;
+    if (
+      live &&
+      (metadataOnly ||
+        baseline.documentSync?.pending ||
+        live.documentSync?.pending ||
+        this.active.has(ws.id) ||
+        (live.documentSync?.generation || 0) !== (baseline.documentSync?.generation || 0))
+    ) {
+      preserveLocalContent(ws, live);
+      return true;
+    }
+    return false;
+  }
+  applyIncoming(ws, original) {
+    const live = this.store.get('workshops', ws.id);
+    if (live) {
+      const changed = ws.revision !== original.revision;
+      const latest = structuredClone(live);
+      preserveLocalContent(latest, ws);
+      latest.revision = live.revision + (changed ? 1 : 0);
+      for (const key of Object.keys(ws)) delete ws[key];
+      Object.assign(ws, latest);
+    }
+    this.store.put('workshops', ws.id, ws);
   }
   async read(ws) {
     const top = await this.notion.list(`blocks/${ws.notion.pageId}/children`),
@@ -357,8 +443,13 @@ export class NotionContent {
       ws.notionVoteBaseline[phase][id] = n;
     }
   }
-  async pull(ws, edited, force = false) {
-    if (ws.documentSync?.pending) return;
+  async pull(ws, edited, force = false, { discardPending = false } = {}) {
+    if (
+      this.active.has(ws.id) ||
+      this.reading.has(ws.id) ||
+      (ws.documentSync?.pending && !discardPending)
+    )
+      return false;
     const state = this.state(ws);
     if (
       !force &&
@@ -366,17 +457,37 @@ export class NotionContent {
       state?.edited === edited &&
       Date.now() - (state.at || 0) < 60000
     )
-      return;
+      return true;
     const original = structuredClone(ws);
+    const generation = ws.documentSync?.generation || 0;
+    const teamKeys = (w) => JSON.stringify(Object.values(w.teams).map((t) => [t.id, t.name]));
+    const superseded = () => {
+      const live = this.store.get('workshops', ws.id);
+      return (
+        this.active.has(ws.id) ||
+        (live &&
+          (teamKeys(live) !== teamKeys(original) ||
+            (live.documentSync?.generation || 0) !== generation ||
+            (!discardPending && live.documentSync?.pending)))
+      );
+    };
+    const restore = () => {
+      for (const key of Object.keys(ws)) delete ws[key];
+      Object.assign(ws, original);
+    };
+    this.reading.add(ws.id);
     try {
       const doc = await this.read(ws);
+      if (superseded()) return false;
       if (!doc) {
         this.loaded.add(ws.id);
         ws.documentSync = {
+          generation,
           pending: false,
           error: 'Notionページに「① もやもやの言語化（N1）」の見出しを作成してください',
         };
-        return;
+        this.applyIncoming(ws, original);
+        return false;
       }
       const fp = this.fingerprint(doc);
       if (state?.fingerprint !== fp) {
@@ -410,13 +521,36 @@ export class NotionContent {
           for (const id of Object.keys(ballot)) if (!valid.has(id)) delete ballot[id];
         ws.revision++;
       }
-      ws.documentSync = { at: Date.now(), pending: false, error: null };
-      this.save(ws, { ...state, doc, fingerprint: fp, edited, at: Date.now() });
+      if (superseded()) {
+        restore();
+        return false;
+      }
+      ws.documentSync = { at: Date.now(), generation, pending: false, error: null };
+      const nextState = { ...state, doc, fingerprint: fp, edited, at: Date.now() };
+      if (discardPending)
+        for (const field of [
+          'attempt',
+          'patchAttempt',
+          'archiveAttempt',
+          'sectionAttempt',
+          'recovered',
+        ])
+          delete nextState[field];
+      this.store.tx(() => {
+        this.save(ws, nextState);
+        this.applyIncoming(ws, original);
+        if (discardPending) this.store.del('kv', outboxKey(ws.id));
+      });
       this.loaded.add(ws.id);
+      return true;
     } catch (e) {
-      for (const k of Object.keys(ws)) delete ws[k];
-      Object.assign(ws, original);
+      restore();
+      if (superseded()) return false;
       ws.documentSync = { ...ws.documentSync, error: e.message };
+      this.applyIncoming(ws, original);
+      return false;
+    } finally {
+      this.reading.delete(ws.id);
     }
   }
   remove(doc, id) {
@@ -557,6 +691,13 @@ export class NotionContent {
     requireThat(created.length === 1, 'Notionの追加結果が未確定です', 502);
     const block = { ...created[0], parentId, children: [], _phase: phase };
     this.add(state.doc, parentId, block, after);
+    if (options.nodeId) {
+      const node = Object.values(ws.teams)
+        .flatMap((t) => t.nodes)
+        .find((n) => n.id === options.nodeId);
+      if (node) node.notionBlockId = block.id;
+      this.store.put('workshops', ws.id, ws);
+    }
     delete state.attempt;
     this.save(ws, state);
     return block;
@@ -727,7 +868,6 @@ export class NotionContent {
         }
         retained.add(b.id);
         previous = b.id;
-        this.store.put('workshops', ws.id, ws);
         await visit(n.id, b.id, b.id !== original?.id);
       }
     };
@@ -901,7 +1041,12 @@ export class NotionContent {
       state.fingerprint = this.fingerprint(state.doc);
       state.at = Date.now();
       this.save(ws, state);
-      ws.documentSync = { at: Date.now(), pending: false, error: null };
+      ws.documentSync = {
+        at: Date.now(),
+        generation: ws.documentSync?.generation || 0,
+        pending: false,
+        error: null,
+      };
     } catch (e) {
       ws.documentSync = {
         ...ws.documentSync,
@@ -911,20 +1056,14 @@ export class NotionContent {
         error: e.message,
       };
     }
-    ws.revision++;
     this.store.put('workshops', ws.id, ws);
     return ws;
   }
   async change(user, wsId, body, { immediate = false, now = Date.now() } = {}) {
     let ws = this.store.get('workshops', wsId);
     if (!ws.notion) return mutate(this.store, user, wsId, body);
-    if (!immediate && (mapActions.has(body.action) || ws.documentSync?.queued)) {
+    if (!immediate) {
       requireThat(this.state(ws)?.doc, 'Notionの①見出しを確認して同期してください', 409);
-      requireThat(
-        !ws.documentSync?.error && (!ws.documentSync?.pending || ws.documentSync.queued),
-        ws.documentSync?.error || 'Notionへの送信中です。少し待って再操作してください',
-        409,
-      );
       const revision = ws.revision;
       ws = mutate(this.store, user, wsId, body);
       return ws.revision === revision ? ws : this.schedule(ws, now);
@@ -988,6 +1127,6 @@ export class NotionContent {
     return this.push(ws, { verified: true });
   }
   async retry(ws) {
-    return this.push(ws);
+    return this.flushScheduled(ws.id, Date.now(), true);
   }
 }

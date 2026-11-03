@@ -11,11 +11,9 @@ const visibleState = (w) =>
     endDate: w.endDate,
     deleted: w.deleted,
     members: w.members,
-    teams: w.teams,
+    teams: Object.values(w.teams).map((t) => ({ id: t.id, name: t.name })),
     error: w.notion?.error,
     conflict: w.notion?.conflict,
-    documentPending: w.documentSync?.pending,
-    documentError: w.documentSync?.error,
   });
 export const participantSchema = {
   名前: { title: {} },
@@ -41,9 +39,10 @@ export class Notion {
     requireThat(this.enabled(), 'Notion連携が未設定です', 503);
     const form = body instanceof FormData;
     if (this.liveTransport) {
-      const wait = 350 - (Date.now() - this.lastRequestAt);
+      const now = Date.now(),
+        wait = Math.max(0, this.lastRequestAt + 350 - now);
+      this.lastRequestAt = now + wait;
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      this.lastRequestAt = Date.now();
     }
     const response = await this.transport(`https://api.notion.com/v1/${path}`, {
       method,
@@ -65,6 +64,24 @@ export class Notion {
       throw error;
     }
     return response.json();
+  }
+  checkpointNotion(ws, fields) {
+    const live = this.store.get('workshops', ws.id);
+    if (!live) this.store.put('workshops', ws.id, ws);
+    else {
+      live.notion ||= {};
+      for (const field of fields) live.notion[field] = ws.notion[field];
+      this.store.put('workshops', live.id, live);
+    }
+  }
+  commitPoll(ws, baseline) {
+    const remoteChanged = visibleState(ws) !== visibleState(baseline);
+    const current = this.store.get('workshops', ws.id);
+    this.content.preserveIncoming(ws, baseline, true);
+    ws.revision = (current?.revision ?? baseline.revision) + (remoteChanged ? 1 : 0);
+    expire(this.store, ws);
+    this.store.put('workshops', ws.id, ws);
+    return ws;
   }
   async list(path, method = 'GET') {
     const results = [];
@@ -98,7 +115,7 @@ export class Notion {
         409,
       );
       ws.notion.childCreateAttempt = true;
-      this.store.put('workshops', ws.id, ws);
+      this.checkpointNotion(ws, ['childCreateAttempt']);
       db = await this.call('databases', 'POST', {
         parent: { type: 'page_id', page_id: ws.notion.pageId },
         title: rt('参加者一覧'),
@@ -112,7 +129,7 @@ export class Notion {
       409,
     );
     ws.notion.participantSource = db.data_sources[0].id;
-    this.store.put('workshops', ws.id, ws);
+    this.checkpointNotion(ws, ['participantSource']);
     return ws.notion.participantSource;
   }
   async pullMembers(ws) {
@@ -132,6 +149,7 @@ export class Notion {
       );
     const rows = await this.list(`data_sources/${source}/query`, 'POST'),
       members = {};
+    const liveTeams = this.store.get('workshops', ws.id)?.teams || {};
     for (const row of rows.filter((x) => !x.archived && !x.in_trash)) {
       const email = normalizeEmail(title(row.properties.名前)),
         role = row.properties.選択?.select?.name;
@@ -142,7 +160,10 @@ export class Notion {
         continue;
       requireThat(!members[email], '参加者メールが重複しています。Notion側で修正してください', 409);
       const group = row.properties.グループ?.select?.name;
-      let team = Object.values(ws.teams).find((t) => t.name === group);
+      let team =
+        Object.values(liveTeams).find((t) => t.name === group) ||
+        Object.values(ws.teams).find((t) => t.name === group);
+      if (team) ws.teams[team.id] = structuredClone(team);
       if (group && !team) {
         team = newTeam(group);
         ws.teams[team.id] = team;
@@ -232,6 +253,32 @@ export class Notion {
     });
     return this.running;
   }
+  refreshAuthority() {
+    if (this.authorityRunning) return this.authorityRunning;
+    this.authorityRunning = (async () => {
+      for (const ws of this.store
+        .all('workshops')
+        .filter((w) => w.notion?.checkedAt && Date.now() - w.notion.checkedAt >= 20000)) {
+        const baseline = structuredClone(ws);
+        try {
+          const page = await this.call(`pages/${ws.notion.pageId}`);
+          await this.pullMembers(ws);
+          const meta = this.meta(page);
+          if (!ws.dirty) Object.assign(ws, meta);
+          else if (ws.notion.baseEdited !== page.last_edited_time)
+            ws.notion.conflict = { remote: meta, edited: page.last_edited_time };
+          ws.notion.checkedAt = Date.now();
+          delete ws.notion.error;
+        } catch (e) {
+          ws.notion.error = e.message;
+        }
+        this.commitPoll(ws, baseline);
+      }
+    })().finally(() => {
+      this.authorityRunning = null;
+    });
+    return this.authorityRunning;
+  }
   async perform() {
     requireThat(this.enabled(), 'Notion連携が未設定です', 503);
     try {
@@ -255,7 +302,7 @@ export class Notion {
           ws.teams = {};
           ws.notion = { pageId: page.id, baseEdited: page.last_edited_time };
         }
-        const before = visibleState(ws);
+        let baseline = structuredClone(ws);
         try {
           if (ws.notion.provisioning) await this.completeProvision(ws);
           await this.pullMembers(ws);
@@ -274,31 +321,30 @@ export class Notion {
             ws.notion.baseEdited = page.last_edited_time;
           }
           ws.notion.checkedAt = Date.now();
-          await this.content.pull(ws, page.last_edited_time);
-          ws.notion.checkedAt = Date.now();
           delete ws.notion.error;
-          if (before !== visibleState(ws)) ws.revision++;
-          expire(this.store, ws);
-          this.store.put('workshops', ws.id, ws);
+          // Publish fresh membership before a potentially long document read.
+          this.commitPoll(ws, baseline);
+          ws = this.store.get('workshops', ws.id);
+          baseline = structuredClone(ws);
+          await this.content.pull(ws, page.last_edited_time);
         } catch (e) {
           ws.notion.error = e.message;
-          if (before !== visibleState(ws)) ws.revision++;
-          this.store.put('workshops', ws.id, ws);
+          this.commitPoll(ws, baseline);
         }
       }
       const ids = new Set(remote.map((p) => p.id));
       for (const ws of this.store
         .all('workshops')
         .filter((w) => w.notion && !ids.has(w.notion.pageId))) {
+        const baseline = structuredClone(ws);
         try {
           const p = await this.call(`pages/${ws.notion.pageId}`);
           Object.assign(ws, this.meta(p));
           ws.notion.checkedAt = Date.now();
-          ws.revision++;
-          this.store.put('workshops', ws.id, ws);
+          this.commitPoll(ws, baseline);
         } catch {
           ws.notion.error = 'Notionページへアクセスできません';
-          this.store.put('workshops', ws.id, ws);
+          this.commitPoll(ws, baseline);
         }
       }
       this.store.put('kv', 'notion-sync', { at: Date.now(), error: null });

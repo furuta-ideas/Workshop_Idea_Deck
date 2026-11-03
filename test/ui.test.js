@@ -121,6 +121,7 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
     } else data = { ok: true };
     return { ok: true, status: 200, json: async () => data };
   };
+  window.eval(readFileSync(new URL('../public/build-info.js', import.meta.url), 'utf8'));
   window.eval(script);
   await settle();
   if (!viewState.landing) {
@@ -135,6 +136,65 @@ const click = (f, selector) => {
   assert.ok(el, selector);
   el.click();
 };
+
+for (const confirm of ['Enter', 'Insert', 'blur', 'Escape']) {
+  test(`DOM: 空トピックを${confirm}で取り消した後も選択・直接編集・追加が続けられる`, async (t) => {
+    const f = await setup(t);
+    const count = f.team.nodes.length;
+    click(f, '#new-topic');
+    const input = f.doc.querySelector('#topic-editor');
+    input.value = '   ';
+    input.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+    if (confirm === 'blur') input.dispatchEvent(new f.window.FocusEvent('blur'));
+    else
+      input.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: confirm, bubbles: true }));
+    await settle();
+    assert.equal(f.doc.querySelector('#topic-editor'), null);
+    assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, 0);
+    assert.equal(f.team.nodes.length, count);
+    click(f, '[data-node="node-1"]');
+    assert.equal(f.doc.querySelector('[data-node="node-1"]').classList.contains('selected'), true);
+    f.doc
+      .querySelector('[data-node="node-1"]')
+      .dispatchEvent(new f.window.MouseEvent('dblclick', { bubbles: true }));
+    assert.equal(f.doc.querySelector('#topic-editor').value, '地域のつながり');
+    f.doc
+      .querySelector('#topic-editor')
+      .dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    click(f, '#new-topic');
+    assert.ok(f.doc.querySelector('#topic-editor'));
+    assert.deepEqual(
+      f.errors.map((e) => e.message),
+      [],
+    );
+  });
+}
+
+test('DOM: ビルド日時をログイン・認証入力・メインに同じ固定値で表示し、上端タブと収納メニューを保つ', async (t) => {
+  const f = await setup(t, '管理者', undefined, { landing: true });
+  const label = f.doc.querySelector('.build-info').textContent;
+  assert.match(label, /ビルド \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/);
+  click(f, '#login-entry');
+  await settle();
+  assert.equal(f.doc.querySelector('.workspace-identity .build-info').textContent, label);
+  assert.equal(f.doc.querySelectorAll('.topbar [data-tab]').length, 4);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
+  assert.equal(f.doc.querySelector('#register-key'), null);
+  assert.equal(f.doc.querySelector('#logout'), null);
+  assert.equal(f.doc.querySelector('#account'), null);
+  assert.ok(f.doc.querySelector('#settings svg'));
+  click(f, '#toggle-sidebar');
+  await settle();
+  assert.equal(f.doc.querySelector('.shell').classList.contains('sidebar-collapsed'), true);
+  assert.equal(f.doc.querySelector('#toggle-sidebar').getAttribute('aria-expanded'), 'false');
+  click(f, '[data-tab="1"]');
+  assert.equal(f.doc.querySelector('.shell').classList.contains('sidebar-collapsed'), true);
+  click(f, '#toggle-sidebar');
+  await settle();
+  assert.equal(f.doc.querySelector('.shell').classList.contains('sidebar-collapsed'), false);
+  const auth = await setup(t, '管理者', { demo: false, auth: { emailOtpReady: true } });
+  assert.equal(auth.doc.querySelector('.login-form .build-info').textContent, label);
+});
 test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議論フォームが描画される', async (t) => {
   const f = await setup(t);
   assert.equal(f.doc.querySelectorAll('[data-tab]').length, 4);
@@ -175,7 +235,7 @@ test('DOM: 閲覧者に設定歯車を表示せず、編集や音声認識も無
   const f = await setup(t, '閲覧者');
   assert.equal(f.doc.querySelector('#settings'), null);
   assert.equal(f.doc.querySelector('#node-text'), null);
-  assert.ok(f.doc.querySelector('#new-topic').disabled);
+  assert.equal(f.doc.querySelector('#new-topic').disabled, true);
   assert.ok(f.doc.querySelector('#map-record').disabled);
   assert.match(f.doc.querySelector('.notice').textContent, /閲覧モード/);
   assert.equal(f.calls.filter((c) => c.path.includes('/ai')).length, 0);
@@ -474,11 +534,17 @@ test('DOM: 新しいタブ名、Notion未同期の明示、再同期後の編集
   assert.match(labels[1], /②.*言語化の絞込み（カードの選択）/);
   assert.match(labels[2], /③.*アイデアの可視化（カードの可視化）/);
   assert.match(labels[3], /④.*アイデアの絞込み（投票）/);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
+  click(f, '#settings');
+  await settle();
   assert.match(f.doc.querySelector('.content-status').textContent, /同期未完了/);
-  assert.ok(f.doc.querySelector('#new-topic').disabled);
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
   click(f, '#retry-content-sync');
   await settle();
   assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  f.doc.querySelector('#modal-close').click();
+  click(f, '#settings');
+  await settle();
   assert.match(f.doc.querySelector('.content-status').textContent, /Notionと同期/);
   assert.deepEqual(
     f.errors.map((e) => e.message),
@@ -492,7 +558,7 @@ test('DOM: 10秒同期待ち中も続けて編集でき、入力中の活動を�
     documentSync: { pending: true, queued: true, dueAt: Date.now() + 10000, error: null },
   });
   assert.equal(f.doc.querySelector('#new-topic').disabled, false);
-  assert.match(f.doc.querySelector('.content-status').textContent, /サーバーに保存済み.*10秒後/);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
   assert.equal(f.doc.querySelector('#retry-content-sync'), null);
   click(f, '#new-topic');
   const input = f.doc.querySelector('#topic-editor');
@@ -510,6 +576,34 @@ test('DOM: 10秒同期待ち中も続けて編集でき、入力中の活動を�
     f.errors.map((e) => e.message),
     [],
   );
+});
+
+test('DOM: 同期中・同期障害中も編集でき、同期状態だけの更新ではマップを再描画しない', async (t) => {
+  const f = await setup(t, '管理者', undefined, {
+    content: true,
+    documentSync: { pending: true, syncing: true, error: null },
+  });
+  const panel = f.doc.querySelector('.map-panel');
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
+  f.ws.documentSync = { pending: false, syncing: false, error: null };
+  await f.state.poll();
+  assert.equal(f.doc.querySelector('.map-panel'), panel);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
+  f.ws.documentSync = { pending: true, syncing: false, error: 'Notion側の更新を確認してください' };
+  await f.state.poll();
+  assert.equal(f.doc.querySelector('.map-panel'), panel);
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  assert.equal(f.doc.querySelector('.main .content-status'), null);
+  click(f, '#new-topic');
+  const editor = f.doc.querySelector('#topic-editor');
+  editor.value = '同期障害中も書ける';
+  editor.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  await f.state.poll();
+  assert.equal(f.doc.querySelector('#topic-editor'), editor);
+  editor.dispatchEvent(new f.window.FocusEvent('blur'));
+  await settle();
+  assert.ok(f.team.nodes.some((n) => n.text === '同期障害中も書ける'));
 });
 
 test('DOM: Notion競合でも入力を保持し、最新内容を読み込んでから保存し直せる', async (t) => {

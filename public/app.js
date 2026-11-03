@@ -9,6 +9,15 @@ const esc = (v) =>
 const app = $('#app'),
   modal = $('#modal'),
   modalContent = $('#modal-content');
+const build = globalThis.WORKSHOP_BUILD || { version: 'development', builtAt: '未ビルド' };
+const buildLabel = () =>
+  `<small class="build-info">v${esc(build.version)} · ビルド ${esc(build.builtAt)}（日本時間）</small>`;
+const gearIcon = () =>
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg>';
+let sidebarCollapsed = false;
+try {
+  sidebarCollapsed = localStorage.getItem('workshop-sidebar-collapsed') === 'true';
+} catch {}
 let me,
   ws,
   workshops = [],
@@ -93,8 +102,6 @@ function writable() {
   return (
     ws?.status === '進行中' &&
     !ws.deleted &&
-    (!ws.documentSync?.pending || ws.documentSync?.queued) &&
-    !ws.documentSync?.error &&
     ['管理者', '編集者'].includes(ws.role) &&
     ((!ws.notion?.error && !ws.notion?.conflict) || me.admin)
   );
@@ -169,7 +176,7 @@ async function enter() {
 }
 function loginForm() {
   app.dataset.view = 'login';
-  app.innerHTML = `<main class="login"><section class="login-story">${brand()}<div class="eyebrow">IDEA WORKSHOP</div><h1>ひとつの気づきが、<br>次のアイディアに。</h1><p class="lead">言葉にする。選び取る。組み合わせる。<br>一人ひとりの「もやもや」から、<br>チームで新しい可能性を見つけましょう。</p><div class="mini-notes" aria-hidden="true"><span class="g0">小さな<br>気づき</span><span class="g1">まだない<br>つながり</span><span class="g2">新しい<br>アイディア</span></div></section><section class="login-form"><span class="eyebrow">LET’S GET STARTED</span><h2>ワークショップへようこそ</h2><p class="muted">${invitation ? '招待されたワークショップの登録メールで参加してください。' : '登録済みのメールアドレスでログインしてください。'}</p><form id="login-form"><label for="email">メールアドレス</label><input id="email" type="email" autocomplete="username webauthn" placeholder="name@example.com" required maxlength="254"><div id="password-field"${invitation ? ' hidden' : ''}><label for="password">パスワード <span class="muted">設定済みの方</span></label><input id="password" type="password" autocomplete="current-password" maxlength="200"></div><div id="otp-field" hidden><label for="otp">メールに届いた6桁の認証コード</label><input id="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></div><div id="login-error" class="error" role="alert"></div><button class="primary" id="login-submit">認証コードを送信</button></form><button id="passkey-login" class="passkey">⌑ パスキーでログイン</button><div id="demo-area"></div><p class="login-foot">登録のないメールアドレスは利用できません。<br>参加登録や接続についてはファシリテーターへご連絡ください。</p></section></main>`;
+  app.innerHTML = `<main class="login"><section class="login-story">${brand()}<div class="eyebrow">IDEA WORKSHOP</div><h1>ひとつの気づきが、<br>次のアイディアに。</h1><p class="lead">言葉にする。選び取る。組み合わせる。<br>一人ひとりの「もやもや」から、<br>チームで新しい可能性を見つけましょう。</p><div class="mini-notes" aria-hidden="true"><span class="g0">小さな<br>気づき</span><span class="g1">まだない<br>つながり</span><span class="g2">新しい<br>アイディア</span></div></section><section class="login-form"><span class="eyebrow">LET’S GET STARTED</span><h2>ワークショップへようこそ</h2><p class="muted">${invitation ? '招待されたワークショップの登録メールで参加してください。' : '登録済みのメールアドレスでログインしてください。'}</p><form id="login-form"><label for="email">メールアドレス</label><input id="email" type="email" autocomplete="username webauthn" placeholder="name@example.com" required maxlength="254"><div id="password-field"${invitation ? ' hidden' : ''}><label for="password">パスワード <span class="muted">設定済みの方</span></label><input id="password" type="password" autocomplete="current-password" maxlength="200"></div><div id="otp-field" hidden><label for="otp">メールに届いた6桁の認証コード</label><input id="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></div><div id="login-error" class="error" role="alert"></div><button class="primary" id="login-submit">認証コードを送信</button></form><button id="passkey-login" class="passkey">⌑ パスキーでログイン</button><div id="demo-area"></div>${buildLabel()}<p class="login-foot">登録のないメールアドレスは利用できません。<br>参加登録や接続についてはファシリテーターへご連絡ください。</p></section></main>`;
   challenge = null;
   $('#login-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -238,7 +245,7 @@ function login() {
   app.dataset.view = 'login';
   sessionEntered = false;
   ws = null;
-  app.innerHTML = `<main class="login-landing"><section class="login-card">${brand()}<div class="login-symbol" aria-hidden="true">✦</div><h1>アイディアワークショップ</h1><span class="security-pill">メールOTP・パスキー対応</span><h2>参加者ログイン</h2><p>登録されたアカウントで本人確認します。</p><button id="login-entry" class="primary">本人確認してログイン</button><p class="muted">小さな気づきから、新しい可能性へ。</p></section></main>`;
+  app.innerHTML = `<main class="login-landing"><section class="login-card">${brand()}<div class="login-symbol" aria-hidden="true">✦</div><h1>アイディアワークショップ</h1><span class="security-pill">メールOTP・パスキー対応</span><h2>参加者ログイン</h2><p>登録されたアカウントで本人確認します。</p><button id="login-entry" class="primary">本人確認してログイン</button><p class="muted">小さな気づきから、新しい可能性へ。</p>${buildLabel()}</section></main>`;
   $('#login-entry').onclick = guarded(async () => {
     try {
       await enter();
@@ -255,27 +262,25 @@ function render() {
   }
   const t = team();
   app.dataset.view = 'workspace';
-  app.innerHTML = `<header class="topbar">${brand()}<div class="row"><span class="identity">${esc(me.email)}</span><button id="account" class="avatar" aria-label="アカウントとパスワード設定">${me.admin ? 'F' : 'P'}</button><button id="register-key" class="text-button" title="パスキーを登録">⌑ パスキー登録</button>${me.admin ? '<button id="settings" class="icon" aria-label="管理者設定">⚙</button>' : ''}<button id="logout" class="text-button">ログアウト</button></div></header>${me.demo ? '<div class="warning">ローカル体験モード — 体験用データを別フォルダーに保存しています。本番認証・Notion・AI送信は無効です。</div>' : ''}<div class="shell"><aside class="sidebar"><div><label for="workshop-select">WORKSHOP</label><select id="workshop-select" aria-label="ワークショップを選択">${workshops.map((w) => `<option value="${esc(w.id)}"${w.id === ws?.id ? ' selected' : ''}>${esc(w.name)}${w.deleted ? '（削除済み）' : ''}</option>`).join('')}</select>${me.admin ? '<button id="new-workshop" class="text-button new-workshop">＋ ワークショップを作成</button>' : ''}</div><div class="workspace-tag"><span class="eyebrow">TODAY’S THEME</span><br>${esc(ws?.theme || '新しいワークショップを始めましょう')}</div>${sidebarStatus()}<div><label>TEAMS</label><div class="team-switch">${
+  app.innerHTML = `<header class="topbar">${brand()}${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${['①', '②', '③', '④'][i]}</span><span class="tab-name">${esc(s).replace('（', '<span class="tab-detail">（').replace('）', '）</span>')}</span></button>`).join('')}</nav>` : ''}<div class="workspace-identity"><span class="identity">${esc(me.email)}</span>${buildLabel()}${me.admin ? `<button id="settings" class="icon" aria-label="管理者設定">${gearIcon()}</button>` : ''}</div></header>${me.demo ? '<div class="warning">ローカル体験モード — 体験用データを別フォルダーに保存しています。本番認証・Notion・AI送信は無効です。</div>' : ''}<div class="shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}"><aside class="sidebar"><button id="toggle-sidebar" class="sidebar-toggle" aria-label="${sidebarCollapsed ? 'メニューを展開' : 'メニューを折りたたむ'}" aria-expanded="${!sidebarCollapsed}" title="${sidebarCollapsed ? 'メニューを展開' : 'メニューを折りたたむ'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 4h16v16H4zM9 4v16m6-12-3 4 3 4"/></svg><span>メニュー</span></button><div><label for="workshop-select">WORKSHOP</label><select id="workshop-select" aria-label="ワークショップを選択">${workshops.map((w) => `<option value="${esc(w.id)}"${w.id === ws?.id ? ' selected' : ''}>${esc(w.name)}${w.deleted ? '（削除済み）' : ''}</option>`).join('')}</select>${me.admin ? '<button id="new-workshop" class="text-button new-workshop">＋ ワークショップを作成</button>' : ''}</div><div class="workspace-tag"><span class="eyebrow">TODAY’S THEME</span><br>${esc(ws?.theme || '新しいワークショップを始めましょう')}</div>${sidebarStatus()}<div class="sidebar-teams"><label>TEAMS</label><div class="team-switch">${
     Object.values(ws?.teams || {})
       .map(
         (t, i) =>
-          `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
+          `<button data-team="${esc(t.id)}" title="${esc(t.name)}・${t.id === ws.myTeam ? '参加中' : '閲覧のみ'}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.7.0</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${['①', '②', '③', '④'][i]}</span><span class="tab-name">${esc(s).replace('（', '<span class="tab-detail">（').replace('）', '）</span>')}</span></button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}${contentStatus()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
-  $('#account').onclick = accountDialog;
-  $('#logout').onclick = guarded(async () => {
-    stopRecording();
-    await api('/api/logout', {});
-    me = null;
-    ws = null;
-    login();
-  });
-  $('#register-key').onclick = guarded(async () => {
-    const data = await api('/api/auth/register/options', {});
-    const response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: data.options });
-    await api('/api/auth/register/verify', { challengeId: data.challengeId, response });
-    toast('この端末のパスキーを登録しました');
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v${esc(build.version)}</div></aside><main class="main" data-step="${tab}">${ws ? `${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
+  $('#toggle-sidebar').onclick = guarded(async () => {
+    if (inlineEdit && !(await commitInline())) return;
+    sidebarCollapsed = !sidebarCollapsed;
+    try {
+      localStorage.setItem('workshop-sidebar-collapsed', String(sidebarCollapsed));
+    } catch {}
+    render();
+    requestAnimationFrame(() => {
+      if (mapFit) fitMap();
+      else updateMapStage();
+    });
   });
   if (me.admin) {
     $('#settings').onclick = guarded(settings);
@@ -333,12 +338,15 @@ function contentStatus() {
   const s = ws.documentSync || {},
     problem = s.error || (s.pending && !s.queued && !s.syncing),
     label = s.error
-      ? 'Notion同期未完了：' + esc(s.error)
-      : s.queued
-        ? '● サーバーに保存済み・操作停止10秒後にNotionへ同期'
-        : s.pending
-          ? 'Notionへ同期中です。'
-          : '● Notionと同期';
+      ? 'Notion同期未完了（編集は続けられます）：' + esc(s.error)
+      : s.syncing
+        ? '● Notionへバックグラウンド同期中・編集は続けられます' +
+          (s.queued ? '（新しい変更は次に送信）' : '')
+        : s.queued
+          ? '● サーバーに保存済み・操作停止10秒後にNotionへ同期'
+          : s.pending
+            ? 'Notionへ同期中です。'
+            : '● Notionと同期';
   return `<div class="content-status ${problem ? 'content-warning' : ''}" role="status"><span>${label} </span><a href="https://www.notion.so/${ws.notion.pageId.replaceAll('-', '')}" target="_blank" rel="noopener">記録を開く ↗</a>${problem ? '<button id="retry-content-sync">同期を再試行</button>' : ''}${me.admin ? '<button id="reload-content-sync" class="text-button">Notionから再読込み</button>' : ''}</div>`;
 }
 let mapActivityTimer,
@@ -643,7 +651,7 @@ function adviceView() {
       !((tab === 1 || tab === 3) && votingOpen(tab === 1 ? 'cards' : 'ideas')) &&
       message?.should_speak &&
       (s.manual || s.expires > Date.now());
-  return `<section class="ai-advice ${s.muted ? 'muted-robot' : ''}" aria-label="AIアドバイス"><div class="advice-robot"><div class="robot-avatar robot-${s.muted ? 'muted' : s.busy ? 'thinking' : show ? message.robot_animation : 'observing'}">${robotIcon()}</div><button id="next-advice"${disabled(editableTeam() && !s.muted && !s.busy)}>助言をもらう</button></div><div class="advice-body"><div class="row between"><h3>AIアドバイス <span class="guide-label">${message?.source === 'ai' ? '認可済みAI' : 'md基本ガイド'}</span></h3><button id="mute-advice" class="text-button" aria-pressed="${s.muted}">${s.muted ? '助言を再開' : '助言をミュート'}</button></div>${show ? `<div class="robot-bubble" role="status" aria-live="polite"><p id="advice-message">${esc(message.bubble_text)}</p><div class="row"><button id="dismiss-advice" class="text-button">閉じる</button><button id="later-advice" class="text-button">あとで</button><button id="answer-advice" class="text-button">考えを入力する ↗</button>${message.proposal ? '<button id="preview-clusters">分類案を確認</button>' : ''}</div></div>` : `<p class="muted">${s.muted ? '助言を休止しています。' : s.busy ? 'チームの内容を確認しています…' : '必要なときに短い問いで、発想や整理をお手伝いします。'}</p>`}<div class="row advice-actions">${tab === 0 ? `<button id="classify-advice"${disabled(editableTeam() && aiAvailable('classify'))}>グループ整理案</button>${team().lastGrouping ? `<button id="undo-classify"${disabled(editableTeam())}>分類を元に戻す</button>` : ''}` : ''}<span class="muted">${aiAvailable('questions') ? '管理者設定のmdを読み込んで助言します。' : 'AI未接続：管理者設定のmdにある基本ガイドを表示します。'}</span></div></div></section>`;
+  return `<section class="ai-advice ${s.muted ? 'muted-robot' : ''}" aria-label="AIアドバイス"><div class="advice-robot"><div class="robot-avatar robot-${s.muted ? 'muted' : s.busy ? 'thinking' : show ? message.robot_animation : 'observing'}">${robotIcon()}</div><button id="next-advice"${disabled(editableTeam() && !s.muted && !s.busy)}>助言をもらう</button></div><div class="advice-body"><div class="row between"><h3>AIアドバイス <span class="guide-label">${message?.source === 'ai' ? '認可済みAI' : 'md基本ガイド'}</span></h3><button id="mute-advice" class="text-button" aria-pressed="${s.muted}">${s.muted ? '助言を再開' : '助言をミュート'}</button></div>${show ? `<div class="robot-bubble" role="status" aria-live="polite"><p id="advice-message">${esc(message.bubble_text)}</p><div class="row"><button id="dismiss-advice" class="text-button">閉じる</button><button id="later-advice" class="text-button">あとで</button><button id="answer-advice" class="text-button">考えを入力する ↗</button>${message.proposal ? '<button id="preview-clusters">分類案を確認</button>' : ''}</div></div>` : `<p class="muted">${s.muted ? '助言を休止しています。' : s.busy ? 'チームの内容を確認しています…' : '必要なときに短い問いで、発想や整理をお手伝いします。'}</p>`}<div class="row advice-actions">${tab === 0 ? `<button id="classify-advice"${disabled(editableTeam() && aiAvailable('classify'))}>グループ整理案</button>${team().lastGrouping ? `<button id="undo-classify"${disabled(editableTeam())}>分類を元に戻す</button>` : ''}` : ''}<span class="muted">${aiAvailable('questions') ? esc(aiStatus('questions')) : '外部AI未接続：md基本ガイドを表示（生成AIモデルは未使用）'}</span></div></div></section>`;
 }
 function refreshAdvice() {
   const el = $('.ai-advice');
@@ -861,6 +869,7 @@ function beginInline(id, placement) {
   if (inlineEdit) return;
   if (editing) return toast('入力欄の内容を保存してからトピックを編集してください', true);
   const anchor = team().nodes.find((n) => n.id === id);
+  if (id !== 'theme' && !anchor) return;
   const isNew = !!placement;
   inlineEdit = {
     id: isNew ? crypto.randomUUID() : id,
@@ -900,6 +909,8 @@ async function commitInlineNow() {
   if (!edit.text.trim()) {
     inlineEdit = null;
     editing = false;
+    selected = edit.isNew ? edit.anchorId : edit.id;
+    if (selected !== 'theme' && !team().nodes.some((n) => n.id === selected)) selected = 'theme';
     render();
     return true;
   }
@@ -1003,15 +1014,18 @@ function bindMap() {
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') {
         e.preventDefault();
+        selected = inlineEdit.isNew ? inlineEdit.anchorId : inlineEdit.id;
         inlineEdit = null;
         clearDraft();
         render();
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (await commitInline()) beginInline(selected, 'sibling');
+        const hasText = !!inlineEdit?.text.trim();
+        if ((await commitInline()) && hasText) beginInline(selected, 'sibling');
       } else if (e.key === 'Insert') {
         e.preventDefault();
-        if (await commitInline()) beginInline(selected, 'child');
+        const hasText = !!inlineEdit?.text.trim();
+        if ((await commitInline()) && hasText) beginInline(selected, 'child');
       }
     });
     input.onblur = () => {
@@ -1447,13 +1461,14 @@ async function settings() {
               '',
             )}</tbody></table><div class="qr-area"><img class="qr" src="/api/workshops/${ws.id}/qr" alt="参加用QRコード"><div><h3>参加用QR</h3><p class="muted">登録済みメール＋メールOTPで参加します。<br>QRだけで権限は付与されません。</p><a href="${esc(location.origin + '/?workshop=' + ws.id)}" target="_blank" rel="noopener">参加ページを開く ↗</a></div></div></section>`
         : ''
-    }<section><h3>Notion連携</h3><p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AIファシリテータの動作（Markdown）</h3><p class="muted">このmdをAIの指示として読み込みます。AI未接続時は先頭設定の基本ガイドを使います。JSON設定ブロックを保持してください。</p><form id="facilitator-form"><label for="facilitator-md">ファシリテータ用md</label><textarea id="facilitator-md" class="markdown-editor" spellcheck="false" maxlength="120000">${esc(facilitator.markdown)}</textarea><div class="row"><button class="primary">mdを保存</button><a href="/api/facilitator/export">mdをダウンロード ↓</a></div><p id="facilitator-save-status" role="status"></p></form></section><section><h3>AI接続とモデル</h3><p class="muted">会社承認済みの接続先はサーバーの許可リストから選択します。認可情報・接続キーは画面から追加できません。</p><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
+    }<section><h3>Notion連携</h3>${contentStatus()}<p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AIファシリテータの動作（Markdown）</h3><p class="muted">このmdをAIの指示として読み込みます。AI未接続時は先頭設定の基本ガイドを使います。JSON設定ブロックを保持してください。</p><form id="facilitator-form"><label for="facilitator-md">ファシリテータ用md</label><textarea id="facilitator-md" class="markdown-editor" spellcheck="false" maxlength="120000">${esc(facilitator.markdown)}</textarea><div class="row"><button class="primary">mdを保存</button><a href="/api/facilitator/export">mdをダウンロード ↓</a></div><p id="facilitator-save-status" role="status"></p></form></section><section><h3>AI接続とモデル</h3><p class="muted">会社承認済みの接続先はサーバーの許可リストから選択します。認可情報・接続キーは画面から追加できません。</p><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
       .filter((p) => p.id !== 'genspark-enterprise')
       .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
       .join(
         '',
       )}</select><label for="ai-model">モデル（空欄＝サービス既定モデル）</label><input id="ai-model" value="${esc(me.ai.model)}" maxlength="150" placeholder="未指定"><label for="ai-prompt">画像生成プロンプト</label><textarea id="ai-prompt" maxlength="6000" placeholder="後日、画像生成用プロンプトを設定してください">${esc(me.ai.imagePrompt)}</textarea><p class="muted">質問・分類・文字起こし・要約・キーワード・画像生成のすべてに、この制限を適用します。</p><button class="primary">AI設定を保存</button></form></section>${ws ? `<section><h3>成果物の保存</h3><p class="muted">WSの状態を「完了（変更不可）」にすると、管理者がPNG・Markdownを保存できます。</p>${ws.status === '完了（変更不可）' ? teams.map((t) => `<div class="export-links"><strong class="muted">${esc(t.name)}</strong><a href="/api/workshops/${ws.id}/export?team=${t.id}&format=md">文章 Markdown ↓</a>${t.image ? `<a href="/api/workshops/${ws.id}/export?team=${t.id}&format=png">画像 PNG ↓</a>` : ''}</div>`).join('') : ''}<button id="notion-results"${disabled(ws.status === '完了（変更不可）' && !!ws.notion && connection.enabled)}>NotionのWS配下へ成果を保存</button></section>` : ''}</div>`,
   );
+  bindContentStatus();
   if (ws) {
     $('#meta-form').onsubmit = guarded(async (e) => {
       e.preventDefault();
@@ -1636,6 +1651,11 @@ async function poll() {
         ws = latest;
         render();
       }
+    } else if (JSON.stringify(latest.documentSync) !== JSON.stringify(ws.documentSync)) {
+      ws.documentSync = latest.documentSync;
+      const status = $('.content-status');
+      if (status) status.outerHTML = contentStatus();
+      bindContentStatus();
     }
   } catch (e) {
     if (me) {

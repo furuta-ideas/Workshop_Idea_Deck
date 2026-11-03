@@ -12,6 +12,7 @@ const assetPaths = new Set([
   '/',
   '/index.html',
   '/app.js',
+  '/build-info.js',
   '/style.css',
   '/WorkShop_Top.png',
   '/webauthn.js',
@@ -47,12 +48,37 @@ export class WorkshopState extends DurableObject {
   }
   async alarm() {
     if (this.env.MIGRATION_TOKEN) return;
-    await this.app.flushPending();
+    const tasks = [];
+    const job = this.app.flushPending();
+    if (job) tasks.push(job);
     const previous = this.store.get('kv', 'cloud-maintenance') || { at: 0 };
-    if (Date.now() - previous.at >= this.app.notion.config.pollSeconds * 1000) {
-      await this.app.maintain();
-      this.store.put('kv', 'cloud-maintenance', { at: Date.now() });
-    }
+    if (Date.now() - previous.at >= this.app.notion.config.pollSeconds * 1000)
+      tasks.push(
+        Promise.resolve(this.app.maintain()).then(() => {
+          this.store.put('kv', 'cloud-maintenance', { at: Date.now() });
+        }),
+      );
+    let finished = !tasks.length;
+    const completed = Promise.allSettled(tasks).then(() => {
+      finished = true;
+    });
+    // Keep membership fresh even when a large outgoing document takes minutes.
+    do {
+      if (!finished) {
+        let timer;
+        try {
+          await Promise.race([
+            completed,
+            new Promise((resolve) => {
+              timer = setTimeout(resolve, 15000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!finished) await this.app.notion.refreshAuthority();
+      }
+    } while (!finished);
     await this.nextAlarm();
   }
   async fetch(request) {

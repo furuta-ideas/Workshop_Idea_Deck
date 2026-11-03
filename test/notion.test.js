@@ -32,6 +32,12 @@ function fixture(t) {
     const path = new URL(url).pathname.replace('/v1/', ''),
       body = init.body ? JSON.parse(init.body) : undefined;
     state.calls.push({ path, method: init.method, body });
+    if (state.gate?.path === path) {
+      const gate = state.gate;
+      state.gate = null;
+      gate.enter();
+      await gate.wait;
+    }
     if (state.fail) return { ok: false, status: 503 };
     let data;
     if (path === 'data_sources/master')
@@ -221,4 +227,69 @@ test('Notion接続状態は未設定・同期待ち・失敗・陳腐化・正�
   assert.equal(state.state, 'error');
   assert.equal(state.error, undefined);
   assert.equal(state.workshops, undefined);
+});
+
+test('Notion権限の再確認: 通信中のローカル編集を保持し、新しい閲覧者権限を即時に適用する', async (t) => {
+  const f = fixture(t);
+  await f.notion.sync();
+  let ws = f.store.all('workshops')[0];
+  f.store.put('kv', `notion-content:${ws.id}`, { doc: { sections: {} } });
+  let enter, release;
+  const ready = new Promise((r) => {
+      enter = r;
+    }),
+    wait = new Promise((r) => {
+      release = r;
+    });
+  f.state.gate = { path: 'data_sources/participants/query', enter, wait };
+  const syncing = f.notion.sync();
+  await ready;
+  const user = { email: 'editor@example.test', admin: false },
+    team = Object.values(ws.teams)[0];
+  ws = await f.notion.content.change(
+    user,
+    ws.id,
+    {
+      action: 'createTopic',
+      payload: { teamId: team.id, placement: 'main', text: '権限確認中の編集' },
+      revision: ws.revision,
+      requestId: 'during-membership',
+    },
+    { now: 1000 },
+  );
+  f.state.members[0].role = '閲覧者';
+  release();
+  await syncing;
+  ws = f.store.get('workshops', ws.id);
+  assert.equal(ws.teams[team.id].nodes[0].text, '権限確認中の編集');
+  assert.equal(ws.documentSync.pending, true);
+  assert.equal(ws.members[user.email].role, '閲覧者');
+  await assert.rejects(
+    () =>
+      f.notion.content.change(user, ws.id, {
+        action: 'node',
+        payload: { teamId: team.id, text: '拒否する編集' },
+        revision: ws.revision,
+        requestId: 'after-membership',
+      }),
+    (e) => e.status === 403,
+  );
+});
+
+test('Notion権限の独立更新: 長い本文処理とは別に権限の鮮度を回復し、本文は上書きしない', async (t) => {
+  const f = fixture(t);
+  await f.notion.sync();
+  let ws = f.store.all('workshops')[0];
+  const team = Object.values(ws.teams)[0];
+  team.nodes = [{ id: 'local', parent: 'theme', group: 0, text: '保持するローカル内容' }];
+  ws.documentSync = { pending: true, syncing: true, generation: 3 };
+  ws.notion.checkedAt = Date.now() - 45000;
+  f.store.put('workshops', ws.id, ws);
+  f.state.members[0].role = '管理者';
+  await f.notion.refreshAuthority();
+  ws = f.store.get('workshops', ws.id);
+  assert.ok(Date.now() - ws.notion.checkedAt < 1000);
+  assert.equal(ws.members['editor@example.test'].role, '管理者');
+  assert.equal(ws.teams[team.id].nodes[0].text, '保持するローカル内容');
+  assert.equal(ws.documentSync.generation, 3);
 });
