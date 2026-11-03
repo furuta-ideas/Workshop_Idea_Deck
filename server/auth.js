@@ -1,5 +1,5 @@
 import { randomBytes, randomInt } from 'node:crypto';
-import nodemailer from 'nodemailer';
+import { mailConfigured, mailTransport, mailFailure } from './mail.js';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -20,26 +20,16 @@ export class Auth {
   constructor(store, config, sendOtp) {
     this.store = store;
     this.config = config;
-    this.mailConfigured = !!sendOtp || !!(config.smtp.host && config.smtp.from);
+    this.mailConfigured = !!sendOtp || mailConfigured(config.smtp);
     this.sendOtp =
       sendOtp ||
       (async (email, code) => {
         requireThat(
-          config.smtp.host && config.smtp.from,
+          mailConfigured(config.smtp),
           'メール配信が未設定です。管理者へご連絡ください',
           503,
         );
-        const transport = nodemailer.createTransport({
-          host: config.smtp.host,
-          port: config.smtp.port,
-          secure: config.smtp.secure,
-          auth: config.smtp.user
-            ? { user: config.smtp.user, pass: config.smtp.password }
-            : undefined,
-          connectionTimeout: 10000,
-          socketTimeout: 15000,
-          requireTLS: !config.smtp.secure,
-        });
+        const transport = mailTransport(config.smtp);
         await transport.sendMail({
           from: config.smtp.from,
           to: email,
@@ -117,7 +107,7 @@ export class Auth {
       } catch (e) {
         this.store.del('challenges', challenge);
         if (e instanceof Fault) throw e;
-        throw new Fault(503, 'メール配信に失敗しました。再送してください');
+        throw new Fault(503, mailFailure(e, this.config.smtp));
       }
     }
     return { challenge, message: '登録と入力内容が有効であれば、認証コードを送信しました。' };

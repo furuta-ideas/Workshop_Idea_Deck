@@ -67,6 +67,7 @@ node --test --test-concurrency=1
 - [確定仕様書 v0.3](docs/SPEC-v0.3.md)
 - [Notion設定・テンプレート・障害復旧](docs/NOTION.md)
 - [AI認可・Gateway契約](docs/AI-GATEWAY.md)
+- [Gmail送信元の設定](docs/GMAIL.md)
 - [レビューと接続確認項目](docs/REVIEW.md)
 
 開発用コードは指定リポジトリの `codex/workshop-implementation` ブランチで管理します。参考アプリのリポジトリは変更していません。本番公開や有料サービス契約は行っていません。

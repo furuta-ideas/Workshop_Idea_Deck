@@ -197,3 +197,41 @@ test('OTP: SMTP未設定は未知メールでも未設定と通知し、送信�
   );
   assert.equal(store.all('challenges').length, 0);
 });
+
+test('OTP: Gmailの接続先だけでは準備完了とせず、アプリパスワードを要求する', async (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const auth = new Auth(store, {
+    smtp: {
+      host: 'smtp.gmail.com',
+      from: 'sender@example.test',
+      user: 'sender@example.test',
+      password: '',
+    },
+  });
+  assert.equal(auth.emailOtpReady(), false);
+  await assert.rejects(
+    () => auth.start({ email: 'member@example.test' }, 'test'),
+    (e) => e.status === 503 && e.message.includes('送信設定がありません'),
+  );
+});
+
+test('OTP: Gmail認証失敗は送信成功にせず、チャレンジを削除して理由だけ返す', async (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  store.put('users', 'member@example.test', { id: id(), email: 'member@example.test' });
+  const auth = new Auth(store, { smtp: { host: 'smtp.gmail.com' } }, async () => {
+    const error = new Error('sensitive upstream response');
+    error.code = 'EAUTH';
+    throw error;
+  });
+  await assert.rejects(
+    () => auth.start({ email: 'member@example.test' }, 'test'),
+    (e) =>
+      e.status === 503 &&
+      e.message.includes('アプリパスワード') &&
+      !e.message.includes('sensitive'),
+  );
+  assert.equal(store.all('challenges').length, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
+});
