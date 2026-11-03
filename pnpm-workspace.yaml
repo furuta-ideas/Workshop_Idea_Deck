@@ -3,3 +3,6 @@ packages:
 storeDir: .pnpm-store
 packageImportMethod: copy
 nodeLinker: hoisted
+allowBuilds:
+  esbuild: true
+  workerd: true
