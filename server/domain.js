@@ -68,10 +68,13 @@ export function teamFor(ws, user, teamId, write = true) {
   return team;
 }
 export const totals = (ws, phase) =>
-  Object.values(ws.votes[phase]).reduce((a, ballot) => {
-    for (const [k, n] of Object.entries(ballot)) a[k] = (a[k] || 0) + n;
-    return a;
-  }, {});
+  Object.values(ws.votes[phase]).reduce(
+    (a, ballot) => {
+      for (const [k, n] of Object.entries(ballot)) a[k] = (a[k] || 0) + n;
+      return a;
+    },
+    { ...(ws.notionVoteBaseline?.[phase] || {}) },
+  );
 export function view(ws, user) {
   const result = structuredClone(ws);
   delete result.members;
@@ -245,6 +248,7 @@ export function mutate(store, user, wsId, body) {
         '項目がありません',
       );
       team.nodes = team.nodes.filter((n) => n.id !== p.id);
+      if (ws.notionVoteBaseline?.cards) delete ws.notionVoteBaseline.cards[p.id];
       team.nodes.forEach((n) => {
         if (n.parent === p.id) n.parent = null;
       });

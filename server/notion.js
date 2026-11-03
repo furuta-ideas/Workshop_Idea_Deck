@@ -1,5 +1,6 @@
 import { id, newWorkshop, newTeam, normalizeEmail } from './store.js';
 import { requireThat, Fault, expire, markdown } from './domain.js';
+import { NotionContent, stageTitles } from './notion-content.js';
 
 const rt = (content) => [{ type: 'text', text: { content } }];
 const title = (p) => (p?.title || []).map((x) => x.plain_text || x.text?.content || '').join('');
@@ -13,6 +14,8 @@ const visibleState = (w) =>
     teams: w.teams,
     error: w.notion?.error,
     conflict: w.notion?.conflict,
+    documentPending: w.documentSync?.pending,
+    documentError: w.documentSync?.error,
   });
 export const participantSchema = {
   名前: { title: {} },
@@ -27,6 +30,8 @@ export class Notion {
     this.config = config;
     this.transport = transport;
     this.running = null;
+    this.content = new NotionContent(this);
+    this.lastRequestAt = 0;
   }
   enabled() {
     return !!(this.config.notionToken && this.config.notionSource);
@@ -34,22 +39,30 @@ export class Notion {
   async call(path, method = 'GET', body) {
     requireThat(this.enabled(), 'Notion連携が未設定です', 503);
     const form = body instanceof FormData;
+    if (this.transport === fetch) {
+      const wait = 350 - (Date.now() - this.lastRequestAt);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.lastRequestAt = Date.now();
+    }
     const response = await this.transport(`https://api.notion.com/v1/${path}`, {
       method,
       redirect: 'error',
       signal: AbortSignal.timeout(20000),
       headers: {
         Authorization: `Bearer ${this.config.notionToken}`,
-        'Notion-Version': '2025-09-03',
+        'Notion-Version': '2026-03-11',
         ...(!form ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body ? (form ? body : JSON.stringify(body)) : undefined,
     });
-    requireThat(
-      response.ok,
-      `Notion同期失敗（HTTP ${response.status}）。設定・共有権限を確認してください`,
-      502,
-    );
+    if (!response.ok) {
+      const error = new Fault(
+        502,
+        `Notion同期失敗（HTTP ${response.status}）。設定・共有権限を確認してください`,
+      );
+      error.notionStatus = response.status;
+      throw error;
+    }
     return response.json();
   }
   async list(path, method = 'GET') {
@@ -176,6 +189,11 @@ export class Notion {
           type: 'paragraph',
           paragraph: { rich_text: rt(`Workshop Idea Deck ID: ${ws.id}`) },
         },
+        ...stageTitles.map((name) => ({
+          object: 'block',
+          type: 'heading_2',
+          heading_2: { rich_text: rt(name), color: 'green_background', is_toggleable: false },
+        })),
       ],
     });
     ws.notion = {
@@ -254,6 +272,8 @@ export class Notion {
             Object.assign(ws, meta);
             ws.notion.baseEdited = page.last_edited_time;
           }
+          ws.notion.checkedAt = Date.now();
+          await this.content.pull(ws, page.last_edited_time);
           ws.notion.checkedAt = Date.now();
           delete ws.notion.error;
           if (before !== visibleState(ws)) ws.revision++;

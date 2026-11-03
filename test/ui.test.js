@@ -19,6 +19,10 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
   const other = newTeam('B班');
   other.nodes.push({ id: 'other-1', text: '他チームの気づき', group: 0, parent: null });
   ws.teams[other.id] = other;
+  if (viewState.content) {
+    ws.notion = { pageId: 'notion-page', checkedAt: Date.now() };
+    ws.documentSync = viewState.documentSync || { pending: false, error: null };
+  }
   const dom = new JSDOM(html, {
     url: 'http://localhost:4317',
     runScripts: 'outside-only',
@@ -66,10 +70,22 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         policy: {},
       };
     else if (path.endsWith('/advice')) data = { should_speak: false };
-    else if (path === '/api/workshops')
+    else if (path.endsWith('/content-sync')) {
+      ws.documentSync = { pending: false, error: null };
+      data = view(ws, admin);
+    } else if (path === '/api/workshops')
       data = state.available ? [{ id: ws.id, name: ws.name, status: ws.status }] : [];
     else if (path === `/api/workshops/${ws.id}`) data = view(ws, { ...admin, admin: state.admin });
     else if (path.endsWith('/action')) {
+      if (state.actionConflict) {
+        state.actionConflict = false;
+        ws.revision++;
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ error: 'Notion側の変更を確認してください' }),
+        };
+      }
       if (state.actionGate) await state.actionGate;
       const body = JSON.parse(options.body);
       if (body.action === 'node' && team.nodes.some((n) => n.id === body.payload.id))
@@ -443,6 +459,51 @@ test('DOM: 入力の保存中に全体表示を押しても二重追加せず、
   assert.equal(f.team.nodes.filter((n) => n.text === '保存中でも一度だけ追加').length, 1);
   assert.equal(f.doc.querySelector('#topic-editor'), null);
   assert.equal(f.doc.querySelectorAll('[data-node]').length, 2);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 新しいタブ名、Notion未同期の明示、再同期後の編集再開', async (t) => {
+  const f = await setup(t, '管理者', undefined, {
+    content: true,
+    documentSync: { pending: true, error: '接続を確認してください' },
+  });
+  const labels = [...f.doc.querySelectorAll('[data-tab]')].map((b) => b.textContent);
+  assert.match(labels[1], /②.*言語化の絞込み（カードの選択）/);
+  assert.match(labels[2], /③.*アイデアの可視化（カードの可視化）/);
+  assert.match(labels[3], /④.*アイデアの絞込み（投票）/);
+  assert.match(f.doc.querySelector('.content-status').textContent, /同期未完了/);
+  assert.ok(f.doc.querySelector('#new-topic').disabled);
+  click(f, '#retry-content-sync');
+  await settle();
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  assert.match(f.doc.querySelector('.content-status').textContent, /Notionと同期/);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: Notion競合でも入力を保持し、最新内容を読み込んでから保存し直せる', async (t) => {
+  const f = await setup(t);
+  f.state.actionConflict = true;
+  const node = f.doc.querySelector('[data-node]');
+  node.dispatchEvent(new f.window.MouseEvent('dblclick', { bubbles: true }));
+  let input = f.doc.querySelector('#topic-editor');
+  input.value = '保存したい入力';
+  input.dispatchEvent(new f.window.Event('input'));
+  input.dispatchEvent(new f.window.FocusEvent('blur'));
+  await settle();
+  assert.ok(f.doc.querySelector('#load-pending'));
+  assert.equal(f.doc.querySelector('#topic-editor').value, '保存したい入力');
+  click(f, '#load-pending');
+  input = f.doc.querySelector('#topic-editor');
+  assert.equal(input.value, '保存したい入力');
+  input.dispatchEvent(new f.window.FocusEvent('blur'));
+  await settle();
+  assert.equal(f.team.nodes[0].text, '保存したい入力');
   assert.deepEqual(
     f.errors.map((e) => e.message),
     [],

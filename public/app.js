@@ -25,7 +25,12 @@ let me,
   polling = false;
 const drafts = new Map();
 const invitation = new URL(location.href).searchParams.get('workshop');
-const titles = ['もやもやの言語化（N1）', 'カードの選択', 'カードの可視化', 'アイディアの投票'];
+const titles = [
+  'もやもやの言語化（N1）',
+  '言語化の絞込み（カードの選択）',
+  'アイデアの可視化（カードの可視化）',
+  'アイデアの絞込み（投票）',
+];
 const adviceStates = new Map();
 let mapDragId = null,
   mapConnectId = null,
@@ -60,7 +65,9 @@ async function api(path, body) {
       me = null;
       login();
     }
-    throw Error(data.error || '処理に失敗しました');
+    const error = Error(data.error || '処理に失敗しました');
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -86,6 +93,8 @@ function writable() {
   return (
     ws?.status === '進行中' &&
     !ws.deleted &&
+    !ws.documentSync?.pending &&
+    !ws.documentSync?.error &&
     ['管理者', '編集者'].includes(ws.role) &&
     ((!ws.notion?.error && !ws.notion?.conflict) || me.admin)
   );
@@ -253,7 +262,7 @@ function render() {
           `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.4.1</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.5</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${['①', '②', '③', '④'][i]}</span><span class="tab-name">${esc(s).replace('（', '<span class="tab-detail">（').replace('）', '）</span>')}</span></button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}${contentStatus()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
   $('#account').onclick = accountDialog;
   $('#logout').onclick = guarded(async () => {
     stopRecording();
@@ -315,8 +324,32 @@ function render() {
   }
   bindAdvice();
   scheduleAdvice('phase_entered');
+  bindContentStatus();
   showPending();
   updateClocks();
+}
+function contentStatus() {
+  if (!ws?.notion) return '';
+  const s = ws.documentSync || {},
+    problem = s.error || s.pending;
+  return `<div class="content-status ${problem ? 'content-warning' : ''}" role="status"><span>${problem ? 'Notion同期未完了：' + esc(s.error || '保存中です。') : '● Notionと同期'} </span><a href="https://www.notion.so/${ws.notion.pageId.replaceAll('-', '')}" target="_blank" rel="noopener">記録を開く ↗</a>${problem ? '<button id="retry-content-sync">同期を再試行</button>' : ''}${me.admin ? '<button id="reload-content-sync" class="text-button">Notionから再読込み</button>' : ''}</div>`;
+}
+function bindContentStatus() {
+  if ($('#retry-content-sync'))
+    $('#retry-content-sync').onclick = guarded(async () => {
+      ws = await api(`/api/workshops/${ws.id}/content-sync`, {});
+      render();
+    });
+  if ($('#reload-content-sync'))
+    $('#reload-content-sync').onclick = guarded(async () => {
+      if (
+        ws.documentSync?.pending &&
+        !confirm('未同期内容をバックアップし、Notionの内容を採用しますか？')
+      )
+        return;
+      ws = await api(`/api/workshops/${ws.id}/content-sync`, { reload: true });
+      render();
+    });
 }
 function emptyWorkshopView() {
   const state = me.notion.state || (me.notion.enabled ? 'pending' : 'unconfigured');
@@ -853,6 +886,12 @@ async function commitInlineNow() {
     return true;
   } catch (e) {
     edit.saving = false;
+    if (e.status === 409) {
+      try {
+        pending = await api(`/api/workshops/${edit.wsId}`);
+        showPending();
+      } catch {}
+    }
     toast(e.message, true);
     $('#topic-editor')?.focus();
     return false;
@@ -1494,6 +1533,18 @@ function showPending() {
   if (pending)
     $('#load-pending').onclick = () => {
       remember();
+      if (
+        inlineEdit &&
+        !inlineEdit.isNew &&
+        !pending.teams[teamId]?.nodes.some((n) => n.id === inlineEdit.id) &&
+        inlineEdit.id !== 'theme'
+      ) {
+        inlineEdit.id = crypto.randomUUID();
+        inlineEdit.isNew = true;
+        inlineEdit.parent = 'theme';
+        inlineEdit.anchorId = 'theme';
+        inlineEdit.placement = 'child';
+      }
       ws = pending;
       pending = null;
       editing = false;

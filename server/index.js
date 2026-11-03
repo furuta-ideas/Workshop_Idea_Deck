@@ -338,7 +338,20 @@ export function createApp(config = configuration(), overrides = {}) {
       }
       if (route === 'action' && req.method === 'POST') {
         available();
-        json(res, view(mutate(store, user, wsId, body), user));
+        json(res, view(await remote(() => notion.content.change(user, wsId, body)), user));
+        return;
+      }
+      if (route === 'content-sync' && req.method === 'POST') {
+        available();
+        access(store, ws, user, true);
+        if (body.reload) {
+          requireThat(user.admin, '管理者のみ操作できます', 403);
+          store.put('kv', `notion-pending-backup:${ws.id}:${Date.now()}`, structuredClone(ws));
+          ws.documentSync = { pending: false };
+          await remote(() => notion.content.pull(ws, undefined, true));
+          store.put('workshops', ws.id, ws);
+        } else await remote(() => notion.content.retry(ws));
+        json(res, view(store.get('workshops', ws.id), user));
         return;
       }
       if (route === 'meta' && req.method === 'POST') {
@@ -484,6 +497,7 @@ export function createApp(config = configuration(), overrides = {}) {
           r = p.result;
         if (p.task === 'image') {
           team.image = validatePNG(r.pngBase64);
+          if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[team.id];
           for (const ballot of Object.values(ws.votes.ideas)) delete ballot[team.id];
         } else if (p.task === 'transcribe') {
           if (p.destination === 'map') {
@@ -528,6 +542,11 @@ export function createApp(config = configuration(), overrides = {}) {
         ws.revision++;
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);
+        if (ws.notion && notion.content.state(ws)?.doc) {
+          ws.documentSync = { ...ws.documentSync, pending: true };
+          store.put('workshops', ws.id, ws);
+          ws = await remote(() => notion.content.push(ws));
+        }
         json(res, view(ws, user));
         return;
       }

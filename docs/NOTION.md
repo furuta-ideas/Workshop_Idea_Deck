@@ -1,6 +1,6 @@
 # Notionの設定と復旧
 
-このチャットのNotion接続は読み取り確認にだけ使用しました。アプリには別の長期Notion API接続が必要です。開発・自動テストでは本番DBを変更していません。
+このチャットのNotion接続は読み取り確認にだけ使用しました。アプリには別の長期Notion API接続が必要です。自動テストは独立したデータで実行します。v0.5では、依頼された実WS本文へ②③④の記録を初期化しました。詳細は [本文同期仕様](SPEC-v0.5.md) を参照してください。
 
 ## 初回設定
 
@@ -9,7 +9,7 @@
 3. `.env` の `NOTION_TOKEN` と `NOTION_WORKSHOPS_SOURCE` を設定します。後者はDBを内包するコンテナーIDではなく、WS一覧の**data_source ID**です。`collection://` 接頭辞は除去しUUIDを指定します。
 4. 専用検証DBで同期・WS作成・子DB作成・メンバー更新・競合・成果保存を確認してから、本番のデータソースに切り替えます。
 
-この実装のHTTPは `https://api.notion.com/v1`、`Notion-Version: 2025-09-03` に固定しています。サーバーのみから呼び出します。[Notion API](https://developers.notion.com/reference/intro)、[DB作成](https://developers.notion.com/reference/create-a-database)、[データソース作成](https://developers.notion.com/reference/create-a-data-source)、[File Upload](https://developers.notion.com/reference/file-upload)
+この実装のHTTPは `https://api.notion.com/v1`、`Notion-Version: 2026-03-11` に固定しています。サーバーのみから呼び出します。[Notion API](https://developers.notion.com/reference/intro)、[DB作成](https://developers.notion.com/reference/create-a-database)、[データソース作成](https://developers.notion.com/reference/create-a-data-source)、[File Upload](https://developers.notion.com/reference/file-upload)
 
 ### 内部接続の作成とトークン入力
 
