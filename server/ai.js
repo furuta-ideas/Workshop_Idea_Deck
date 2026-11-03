@@ -5,7 +5,7 @@ export class AI {
   constructor(store, config, transport = fetch) {
     this.store = store;
     this.config = config;
-    this.transport = transport;
+    this.transport = transport === fetch ? fetch.bind(globalThis) : transport;
   }
   settings() {
     return (
@@ -83,7 +83,7 @@ export class AI {
     try {
       const response = await this.transport(endpoint, {
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         signal: AbortSignal.timeout(90000),
         headers: {
           'Content-Type': 'application/json',

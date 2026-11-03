@@ -1,6 +1,6 @@
 {
   "name": "workshop-idea-deck",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,7 +11,9 @@
     "dev": "node --env-file-if-exists=.env --watch server/index.js",
     "demo": "node server/demo.js",
     "test": "node --test --test-concurrency=1",
-    "check": "node scripts/check.js"
+    "check": "node scripts/check.js",
+    "build:cloudflare": "node scripts/build-cloudflare.js",
+    "deploy:api": "wrangler deploy"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.2.2",
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "jsdom": "26.1.0",
-    "prettier": "3.6.2"
+    "prettier": "3.6.2",
+    "wrangler": "4.151.0"
   }
 }

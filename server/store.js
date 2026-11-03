@@ -23,9 +23,12 @@ export function checkPassword(password, stored) {
   );
 }
 export class Store {
-  constructor(file) {
-    mkdirSync(dirname(file), { recursive: true });
-    this.db = new DatabaseSync(file);
+  constructor(file, database) {
+    if (database) this.db = database;
+    else {
+      mkdirSync(dirname(file), { recursive: true });
+      this.db = new DatabaseSync(file);
+    }
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS workshops(id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS users(email TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -85,6 +88,7 @@ export class Store {
     return x;
   }
   tx(fn) {
+    if (this.db.transaction) return this.db.transaction(fn);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = fn();

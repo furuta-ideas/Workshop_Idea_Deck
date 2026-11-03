@@ -24,7 +24,7 @@ import {
   expire,
 } from './domain.js';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const root = import.meta.url ? resolve(dirname(fileURLToPath(import.meta.url)), '..') : '/bundle';
 export function configuration(env = process.env) {
   const config = {
     host: env.HOST || '127.0.0.1',
@@ -60,7 +60,7 @@ export function configuration(env = process.env) {
   return config;
 }
 export function createApp(config = configuration(), overrides = {}) {
-  mkdirSync(config.dataDir, { recursive: true });
+  if (!overrides.store) mkdirSync(config.dataDir, { recursive: true });
   const store = overrides.store || new Store(join(config.dataDir, 'workshop.sqlite'));
   const auth = new Auth(store, config, overrides.sendOtp),
     ai = new AI(store, config, overrides.aiTransport),
@@ -170,7 +170,10 @@ export function createApp(config = configuration(), overrides = {}) {
       );
       const write = req.method !== 'GET';
       const body = write ? await read(req) : {};
-      const ip = req.socket.remoteAddress || 'unknown';
+      const ip =
+        (config.clientIpHeader && req.headers[config.clientIpHeader]) ||
+        req.socket.remoteAddress ||
+        'unknown';
       if (path === '/api/health') {
         json(res, {
           ok: true,
@@ -588,11 +591,14 @@ export function createApp(config = configuration(), overrides = {}) {
       .finally(() => {
         contentTask = null;
       });
+    return contentTask;
   };
   const maintenance = () => {
     if (notion.running || remoteWrite) return;
     for (const ws of store.all('workshops')) expire(store, ws);
-    if (notion.enabled()) notion.sync().catch((e) => console.error('Notion:', e.message));
+    const syncing = notion.enabled()
+      ? notion.sync().catch((e) => console.error('Notion:', e.message))
+      : null;
     const now = Date.now();
     store.db.prepare('DELETE FROM sessions WHERE expires<?').run(now);
     store.db.prepare("DELETE FROM challenges WHERE json_extract(body,'$.expires') < ?").run(now);
@@ -602,6 +608,7 @@ export function createApp(config = configuration(), overrides = {}) {
     store.db
       .prepare("DELETE FROM kv WHERE id LIKE 'limit:%' AND json_extract(body,'$.until') < ?")
       .run(now);
+    return syncing;
   };
   return {
     server,
@@ -610,6 +617,8 @@ export function createApp(config = configuration(), overrides = {}) {
     ai,
     notion,
     facilitator,
+    maintain: maintenance,
+    flushPending: flushContent,
     start: async () => {
       await new Promise((r) => server.listen(config.port, config.host, r));
       notion.content.recoverScheduled();
@@ -630,7 +639,11 @@ export function createApp(config = configuration(), overrides = {}) {
     },
   };
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  import.meta.url &&
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   const config = configuration();
   const app = createApp(config);
   await app.start();

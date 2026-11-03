@@ -1,8 +1,10 @@
 # アイディアワークショップ支援ツール
 
-デザイン思考ワークショップの「気づき → カード選択 → 議論・可視化 → 投票」をチームで進める、日本語のWebアプリです。仕様 v0.6.1（Notion本文・マップ・カード選択・議論・投票集計の同期）。
+デザイン思考ワークショップの「気づき → カード選択 → 議論・可視化 → 投票」をチームで進める、日本語のWebアプリです。仕様 v0.7.0（Notion本文・マップ・カード選択・議論・投票集計の同期）。
 
 ## すぐに体験する
+
+公開入口：[アイディアワークショップ支援ツール](https://furuta-ideas.github.io/Workshop_Idea_Deck/)。専用Cloudflareアプリのログイン画面へ移動します。直接開く場合は[公開アプリ](https://workshop-idea-deck.furuta-ideas.workers.dev/)を使います。
 
 Node.js 24以上とpnpmが必要です。実装はサーバーを含むため、GitHub Pagesだけでは稼働しません。
 
@@ -64,6 +66,7 @@ node --test --test-concurrency=1
 
 初期管理者のメール変更・認証の復旧はサーバー運用者が行います。`.env` の値を変えて既存アカウントのパスワードを上書きする動作はありません。パスワードの自己変更は現在のパスワードが必要で、変更時は他端末のセッションを失効します。初回設定は直近15分のログインを要求します。
 
+- [クラウド公開 v0.7](docs/SPEC-v0.7.md)
 - [10秒待機同期 v0.6.1](docs/SPEC-v0.6.1.md)
 - [Notionトグル構成 v0.6](docs/SPEC-v0.6.md)
 - [公開サーバーへの配置](docs/DEPLOYMENT.md)
@@ -76,4 +79,4 @@ node --test --test-concurrency=1
 - [Gmail送信元の設定](docs/GMAIL.md)
 - [レビューと接続確認項目](docs/REVIEW.md)
 
-開発用コードは指定リポジトリの `codex/workshop-implementation` ブランチで管理します。参考アプリのリポジトリは変更していません。本番公開や有料サービス契約は行っていません。
+開発用コードは指定リポジトリの `codex/workshop-implementation` ブランチで管理します。公開には専用のCloudflare WorkerとGitHub Pagesの入口を使います。参考アプリのリポジトリ・Workerは変更せず、有料サービス契約やプラン変更も行っていません。

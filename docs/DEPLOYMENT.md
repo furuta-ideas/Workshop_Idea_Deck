@@ -1,6 +1,10 @@
-# 公開用Nodeサーバー
+# 公開構成とNodeサーバーへの代替配置
 
-このアプリはNode.js 24、永続ローカルディスク、GmailへのSMTP接続を使います。静的ファイルだけの公開では、OTP認証とNotion同期は動作しません。公開入口として`https://furuta-ideas.github.io/Workshop_Idea_Deck/`が指定されています。GitHub Pagesだけではサーバー機能を実行できないため、APIを動かす環境が別途必要です。参考アプリの公開設定ではCloudflare Workersを併用しています。本アプリのクラウドへの配置はまだ完了していません。
+公開入口は`https://furuta-ideas.github.io/Workshop_Idea_Deck/`で、専用アプリ`https://workshop-idea-deck.furuta-ideas.workers.dev/`へ移動します。Workerは既存Cloudflareアカウントへ公開済みで、データは専用の永続SQLストレージに保存します。詳細は[v0.7](SPEC-v0.7.md)を参照してください。
+
+Workerは`pnpm deploy:api`、GitHub Pagesの入口は`.github/workflows/pages.yml`で公開します。前者は必要な画面アセットだけを収集してからデプロイします。秘密はCloudflareのSecretへ登録し、静的アセット・Git・ZIPへ含めません。移行の短期資格情報は削除済みです。
+
+以下は、通常のNodeサーバーへ代替配置する場合の手順です。GitHub PagesだけではOTP認証とNotion同期は動作しません。Cloudflareと別のサーバーを、同じNotionマスターに書き込む状態で同時運用しないでください。
 
 ## 配置するもの
 

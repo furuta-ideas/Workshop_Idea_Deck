@@ -136,11 +136,17 @@ export class Facilitator {
   constructor(store, config, ai) {
     this.store = store;
     this.ai = ai;
+    if (config.facilitatorDocument !== undefined) {
+      if (!store.get('kv', 'facilitator-document'))
+        store.put('kv', 'facilitator-document', { markdown: config.facilitatorDocument });
+      return;
+    }
     this.file = join(config.dataDir, 'ai-facilitator.md');
     this.defaultFile = fileURLToPath(new URL('../config/ai-facilitator.md', import.meta.url));
     if (!existsSync(this.file)) writeFileSync(this.file, readFileSync(this.defaultFile));
   }
   document() {
+    if (!this.file) return this.store.get('kv', 'facilitator-document').markdown;
     return readFileSync(this.file, 'utf8');
   }
   settings(admin = false) {
@@ -159,9 +165,12 @@ export class Facilitator {
       409,
     );
     parseFacilitator(body.markdown);
-    const temp = this.file + '.tmp';
-    writeFileSync(temp, body.markdown);
-    renameSync(temp, this.file);
+    if (!this.file) this.store.put('kv', 'facilitator-document', { markdown: body.markdown });
+    else {
+      const temp = this.file + '.tmp';
+      writeFileSync(temp, body.markdown);
+      renameSync(temp, this.file);
+    }
     this.store.audit('facilitator-config', { actor: hash(actor), version: hash(body.markdown) });
     return this.settings(true);
   }

@@ -28,7 +28,8 @@ export class Notion {
   constructor(store, config, transport = fetch) {
     this.store = store;
     this.config = config;
-    this.transport = transport;
+    this.liveTransport = transport === fetch;
+    this.transport = this.liveTransport ? fetch.bind(globalThis) : transport;
     this.running = null;
     this.content = new NotionContent(this);
     this.lastRequestAt = 0;
@@ -39,14 +40,14 @@ export class Notion {
   async call(path, method = 'GET', body) {
     requireThat(this.enabled(), 'Notion連携が未設定です', 503);
     const form = body instanceof FormData;
-    if (this.transport === fetch) {
+    if (this.liveTransport) {
       const wait = 350 - (Date.now() - this.lastRequestAt);
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       this.lastRequestAt = Date.now();
     }
     const response = await this.transport(`https://api.notion.com/v1/${path}`, {
       method,
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(20000),
       headers: {
         Authorization: `Bearer ${this.config.notionToken}`,

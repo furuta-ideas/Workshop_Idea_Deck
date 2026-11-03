@@ -43,7 +43,7 @@ test('機能ごとに認可を照合・既定モデル未指定・認可済みga
   assert.equal(sent.length, 1);
   assert.equal('model' in JSON.parse(sent[0].body), false);
   assert.equal(sent[0].url, provider.endpoint);
-  assert.equal(sent[0].redirect, 'error');
+  assert.equal(sent[0].redirect, 'manual');
   await assert.rejects(() => ai.run('transcribe', { audio: 'private' }, 'u@example.test'));
   await assert.rejects(() => ai.run('image', {}, 'u@example.test'));
   assert.equal(sent.length, 1);

@@ -450,7 +450,7 @@ export class NotionContent {
     );
     const response = await this.notion.transport(url, {
       method: 'GET',
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(20000),
     });
     requireThat(response.ok, 'Notion画像を読み込めませんでした', 502);
