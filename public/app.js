@@ -93,7 +93,7 @@ function writable() {
   return (
     ws?.status === '進行中' &&
     !ws.deleted &&
-    !ws.documentSync?.pending &&
+    (!ws.documentSync?.pending || ws.documentSync?.queued) &&
     !ws.documentSync?.error &&
     ['管理者', '編集者'].includes(ws.role) &&
     ((!ws.notion?.error && !ws.notion?.conflict) || me.admin)
@@ -262,7 +262,7 @@ function render() {
           `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.6.0</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${['①', '②', '③', '④'][i]}</span><span class="tab-name">${esc(s).replace('（', '<span class="tab-detail">（').replace('）', '）</span>')}</span></button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}${contentStatus()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.6.1</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${['①', '②', '③', '④'][i]}</span><span class="tab-name">${esc(s).replace('（', '<span class="tab-detail">（').replace('）', '）</span>')}</span></button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}${contentStatus()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
   $('#account').onclick = accountDialog;
   $('#logout').onclick = guarded(async () => {
     stopRecording();
@@ -331,9 +331,50 @@ function render() {
 function contentStatus() {
   if (!ws?.notion) return '';
   const s = ws.documentSync || {},
-    problem = s.error || s.pending;
-  return `<div class="content-status ${problem ? 'content-warning' : ''}" role="status"><span>${problem ? 'Notion同期未完了：' + esc(s.error || '保存中です。') : '● Notionと同期'} </span><a href="https://www.notion.so/${ws.notion.pageId.replaceAll('-', '')}" target="_blank" rel="noopener">記録を開く ↗</a>${problem ? '<button id="retry-content-sync">同期を再試行</button>' : ''}${me.admin ? '<button id="reload-content-sync" class="text-button">Notionから再読込み</button>' : ''}</div>`;
+    problem = s.error || (s.pending && !s.queued && !s.syncing),
+    label = s.error
+      ? 'Notion同期未完了：' + esc(s.error)
+      : s.queued
+        ? '● サーバーに保存済み・操作停止10秒後にNotionへ同期'
+        : s.pending
+          ? 'Notionへ同期中です。'
+          : '● Notionと同期';
+  return `<div class="content-status ${problem ? 'content-warning' : ''}" role="status"><span>${label} </span><a href="https://www.notion.so/${ws.notion.pageId.replaceAll('-', '')}" target="_blank" rel="noopener">記録を開く ↗</a>${problem ? '<button id="retry-content-sync">同期を再試行</button>' : ''}${me.admin ? '<button id="reload-content-sync" class="text-button">Notionから再読込み</button>' : ''}</div>`;
 }
+let mapActivityTimer,
+  lastMapActivitySent = 0;
+function noteMapActivity() {
+  if (!ws?.notion || !ws.documentSync?.queued || !editableTeam()) return;
+  clearTimeout(mapActivityTimer);
+  const activeWs = ws.id,
+    activeTeam = teamId;
+  mapActivityTimer = setTimeout(
+    async () => {
+      if (
+        ws?.id !== activeWs ||
+        teamId !== activeTeam ||
+        !ws.documentSync?.queued ||
+        !editableTeam()
+      )
+        return;
+      lastMapActivitySent = Date.now();
+      try {
+        await api(`/api/workshops/${activeWs}/content-activity`, { teamId: activeTeam });
+      } catch (e) {
+        if (e.status === 409) noteMapActivity();
+      }
+    },
+    Math.max(0, 1000 - (Date.now() - lastMapActivitySent)),
+  );
+}
+for (const event of ['input', 'keydown', 'pointerdown', 'dragstart', 'dragover', 'drop', 'dragend'])
+  app.addEventListener(
+    event,
+    (e) => {
+      if (e.target.closest('.map-panel')) noteMapActivity();
+    },
+    true,
+  );
 function bindContentStatus() {
   if ($('#retry-content-sync'))
     $('#retry-content-sync').onclick = guarded(async () => {

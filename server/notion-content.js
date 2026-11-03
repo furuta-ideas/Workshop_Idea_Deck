@@ -1,5 +1,5 @@
 import { hash } from './store.js';
-import { requireThat, mutate, totals } from './domain.js';
+import { requireThat, mutate, totals, access, teamFor } from './domain.js';
 import { validatePNG } from './png.js';
 
 export const stageTitles = [
@@ -69,6 +69,16 @@ const payload = (type, text, color = 'default') => ({
   },
 });
 const snapshotMarker = 'Workshop Idea Deck state v1';
+const mapActions = new Set([
+  'node',
+  'createTopic',
+  'topicTheme',
+  'reparent',
+  'standalone',
+  'deleteNode',
+  'undoClassification',
+]);
+const idleMilliseconds = 10000;
 const applyBlockUpdate = (block, body) => {
   const type = block.type,
     content = body[type] ? { ...block[type], ...body[type] } : null;
@@ -86,6 +96,49 @@ export class NotionContent {
   }
   save(ws, state) {
     this.store.put('kv', `notion-content:${ws.id}`, state);
+  }
+  schedule(ws, now = Date.now()) {
+    ws.documentSync = {
+      ...ws.documentSync,
+      pending: true,
+      queued: true,
+      syncing: false,
+      dueAt: now + idleMilliseconds,
+      error: null,
+    };
+    this.store.put('workshops', ws.id, ws);
+    return ws;
+  }
+  activity(user, wsId, teamId, now = Date.now()) {
+    const ws = this.store.get('workshops', wsId);
+    access(this.store, ws, user, true);
+    teamFor(ws, user, teamId);
+    if (ws.documentSync?.queued && !ws.documentSync.error) this.schedule(ws, now);
+    return { queued: !!ws.documentSync?.queued };
+  }
+  due(now = Date.now()) {
+    return this.store
+      .all('workshops')
+      .find(
+        (ws) =>
+          ws.notion &&
+          ws.documentSync?.queued &&
+          !ws.documentSync.error &&
+          ws.documentSync.dueAt <= now,
+      );
+  }
+  recoverScheduled(now = Date.now()) {
+    for (const ws of this.store.all('workshops'))
+      if (ws.notion && ws.documentSync?.syncing && !ws.documentSync.error) this.schedule(ws, now);
+  }
+  async flushScheduled(wsId, now = Date.now()) {
+    const ws = this.store.get('workshops', wsId);
+    if (!ws?.documentSync?.queued || ws.documentSync.error || ws.documentSync.dueAt > now)
+      return ws;
+    ws.documentSync = { ...ws.documentSync, queued: false, syncing: true };
+    ws.revision++;
+    this.store.put('workshops', ws.id, ws);
+    return this.push(ws);
   }
   async read(ws) {
     const top = await this.notion.list(`blocks/${ws.notion.pageId}/children`),
@@ -850,15 +903,32 @@ export class NotionContent {
       this.save(ws, state);
       ws.documentSync = { at: Date.now(), pending: false, error: null };
     } catch (e) {
-      ws.documentSync = { ...ws.documentSync, pending: true, error: e.message };
+      ws.documentSync = {
+        ...ws.documentSync,
+        queued: false,
+        syncing: false,
+        pending: true,
+        error: e.message,
+      };
     }
     ws.revision++;
     this.store.put('workshops', ws.id, ws);
     return ws;
   }
-  async change(user, wsId, body) {
+  async change(user, wsId, body, { immediate = false, now = Date.now() } = {}) {
     let ws = this.store.get('workshops', wsId);
     if (!ws.notion) return mutate(this.store, user, wsId, body);
+    if (!immediate && (mapActions.has(body.action) || ws.documentSync?.queued)) {
+      requireThat(this.state(ws)?.doc, 'Notionの①見出しを確認して同期してください', 409);
+      requireThat(
+        !ws.documentSync?.error && (!ws.documentSync?.pending || ws.documentSync.queued),
+        ws.documentSync?.error || 'Notionへの送信中です。少し待って再操作してください',
+        409,
+      );
+      const revision = ws.revision;
+      ws = mutate(this.store, user, wsId, body);
+      return ws.revision === revision ? ws : this.schedule(ws, now);
+    }
     requireThat(
       !ws.documentSync?.pending,
       'Notionへの未同期操作があります。同期を再試行してください',

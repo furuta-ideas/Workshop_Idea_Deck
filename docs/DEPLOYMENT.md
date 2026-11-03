@@ -1,6 +1,6 @@
 # 公開用Nodeサーバー
 
-このアプリはNode.js 24、永続ローカルディスク、GmailへのSMTP接続を使います。静的ファイルだけの公開では、OTP認証とNotion同期は動作しません。公開先は未指定で、公開URLはまだ発行していません。
+このアプリはNode.js 24、永続ローカルディスク、GmailへのSMTP接続を使います。静的ファイルだけの公開では、OTP認証とNotion同期は動作しません。公開入口として`https://furuta-ideas.github.io/Workshop_Idea_Deck/`が指定されています。GitHub Pagesだけではサーバー機能を実行できないため、APIを動かす環境が別途必要です。参考アプリの公開設定ではCloudflare Workersを併用しています。本アプリのクラウドへの配置はまだ完了していません。
 
 ## 配置するもの
 

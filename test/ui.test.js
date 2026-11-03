@@ -486,6 +486,32 @@ test('DOM: 新しいタブ名、Notion未同期の明示、再同期後の編集
   );
 });
 
+test('DOM: 10秒同期待ち中も続けて編集でき、入力中の活動を通知する', async (t) => {
+  const f = await setup(t, '管理者', undefined, {
+    content: true,
+    documentSync: { pending: true, queued: true, dueAt: Date.now() + 10000, error: null },
+  });
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  assert.match(f.doc.querySelector('.content-status').textContent, /サーバーに保存済み.*10秒後/);
+  assert.equal(f.doc.querySelector('#retry-content-sync'), null);
+  click(f, '#new-topic');
+  const input = f.doc.querySelector('#topic-editor');
+  input.value = '連続して入力';
+  input.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  await settle();
+  assert.ok(
+    f.calls.some((c) => c.path.endsWith('/content-activity') && c.body.teamId === f.team.id),
+  );
+  input.dispatchEvent(new f.window.FocusEvent('blur'));
+  await settle();
+  assert.ok(f.team.nodes.some((n) => n.text === '連続して入力'));
+  assert.equal(f.doc.querySelector('#new-topic').disabled, false);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
 test('DOM: Notion競合でも入力を保持し、最新内容を読み込んでから保存し直せる', async (t) => {
   const f = await setup(t);
   f.state.actionConflict = true;

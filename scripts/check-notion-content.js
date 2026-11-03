@@ -91,12 +91,17 @@ try {
       if (!teamId) throw Error('管理者の割当チームが必要です');
       const act = async (action, payload) => {
         const current = store.get('workshops', ws.id);
-        const result = await notion.content.change(user, ws.id, {
-          action,
-          payload,
-          revision: current.revision,
-          requestId: id(),
-        });
+        const result = await notion.content.change(
+          user,
+          ws.id,
+          {
+            action,
+            payload,
+            revision: current.revision,
+            requestId: id(),
+          },
+          { immediate: true },
+        );
         if (result.documentSync?.pending) throw Error(result.documentSync.error);
         return result;
       };

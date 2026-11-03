@@ -147,12 +147,17 @@ function fixture(t, legacy = false) {
   };
   const change = async (action, payload) => {
     const w = store.get('workshops', ws.id);
-    return n.content.change({ email: 'admin@example.test', admin: true }, w.id, {
-      action,
-      payload,
-      revision: w.revision,
-      requestId: id(),
-    });
+    return n.content.change(
+      { email: 'admin@example.test', admin: true },
+      w.id,
+      {
+        action,
+        payload,
+        revision: w.revision,
+        requestId: id(),
+      },
+      { immediate: true },
+    );
   };
   return { store, n, ws, team, other, state, find, load, change };
 }
@@ -486,4 +491,201 @@ test('Notion本文: トグルの各チームを別のマップに読み、空チ
   assert.equal(w.teams[f.other.id].nodes[0].text, 'B班専用');
   assert.equal(w.teams[f.other.id].nodes[0].parent, 'theme');
   assert.ok(!w.teams[f.team.id].nodes.some((n) => n.text === 'B班専用'));
+});
+
+test('Notion待機同期: 操作はAPI通信なしで保存し、最後の変更から10秒経過後だけ最新内容を送信する', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  const user = { email: 'admin@example.test', admin: true },
+    change = async (value, now) => {
+      w = await f.n.content.change(
+        user,
+        w.id,
+        {
+          action: 'node',
+          payload: { teamId: f.team.id, id: 'first', text: value },
+          revision: w.revision,
+          requestId: id(),
+        },
+        { now },
+      );
+    };
+  const calls = f.state.calls.length;
+  await change('最初の編集', 1000);
+  assert.equal(w.documentSync.dueAt, 11000);
+  assert.equal(w.documentSync.queued, true);
+  assert.equal(f.state.calls.length, calls);
+  assert.equal(
+    f.store.get('workshops', w.id).teams[f.team.id].nodes.find((n) => n.id === 'first').text,
+    '最初の編集',
+  );
+  await change('まとめて保存する最終版', 9000);
+  assert.equal(w.documentSync.dueAt, 19000);
+  assert.equal(f.state.calls.length, calls);
+  assert.equal(f.n.content.due(18999), undefined);
+  await f.n.content.flushScheduled(w.id, 18999);
+  assert.equal(f.state.calls.length, calls);
+  await f.n.content.pull(w, 'external-version', true);
+  assert.equal(f.state.calls.length, calls);
+  assert.equal(f.n.content.due(19000).id, w.id);
+  w = await f.n.content.flushScheduled(w.id, 19000);
+  assert.equal(w.documentSync.pending, false);
+  assert.equal(text(f.find('first')), 'まとめて保存する最終版');
+  assert.equal(
+    f.state.calls.filter((c) => c.method === 'PATCH' && c.path === 'blocks/first').length,
+    1,
+  );
+  const after = f.state.calls.length;
+  await f.n.content.flushScheduled(w.id, 30000);
+  assert.equal(f.state.calls.length, after);
+});
+
+test('Notion待機同期: 入力中の活動で待機を延長し、再送と権限違反で不要な延長をしない', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  const user = { email: 'admin@example.test', admin: true },
+    body = {
+      action: 'node',
+      payload: { teamId: f.team.id, id: 'first', text: '編集中' },
+      revision: w.revision,
+      requestId: id(),
+    };
+  w = await f.n.content.change(user, w.id, body, { now: 1000 });
+  w = await f.n.content.change(user, w.id, body, { now: 9000 });
+  assert.equal(w.documentSync.dueAt, 11000);
+  const calls = f.state.calls.length;
+  const revision = w.revision;
+  f.n.content.activity(user, w.id, f.team.id, 10000);
+  w = f.store.get('workshops', w.id);
+  assert.equal(w.documentSync.dueAt, 20000);
+  assert.equal(w.revision, revision);
+  assert.equal(f.state.calls.length, calls);
+  assert.throws(
+    () => f.n.content.activity(user, w.id, f.other.id, 15000),
+    (e) => e.status === 403,
+  );
+  await assert.rejects(
+    () =>
+      f.n.content.change(
+        user,
+        w.id,
+        {
+          ...body,
+          requestId: id(),
+          revision: w.revision,
+          payload: { teamId: f.other.id, text: '越境', id: 'bad' },
+        },
+        { now: 16000 },
+      ),
+    (e) => e.status === 403,
+  );
+  assert.equal(f.store.get('workshops', w.id).documentSync.dueAt, 20000);
+});
+
+test('Notion待機同期: 同期待ち中に作成して削除したトピックはNotionに作成しない', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  const user = { email: 'admin@example.test', admin: true };
+  w = await f.n.content.change(
+    user,
+    w.id,
+    {
+      action: 'createTopic',
+      payload: { teamId: f.team.id, anchorId: 'main', placement: 'child', text: '一時入力' },
+      revision: w.revision,
+      requestId: id(),
+    },
+    { now: 1000 },
+  );
+  const node = w.teams[f.team.id].nodes.find((n) => n.text === '一時入力');
+  w = await f.n.content.change(
+    user,
+    w.id,
+    {
+      action: 'deleteNode',
+      payload: { teamId: f.team.id, id: node.id },
+      revision: w.revision,
+      requestId: id(),
+    },
+    { now: 2000 },
+  );
+  w = await f.n.content.flushScheduled(w.id, 12000);
+  assert.equal(w.documentSync.pending, false);
+  assert.ok(!f.state.calls.some((c) => JSON.stringify(c.body || {}).includes('一時入力')));
+});
+
+test('Notion待機同期: 通信失敗は入力を保持し自動再送を止め、再試行で回復する', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  w = await f.n.content.change(
+    { email: 'admin@example.test', admin: true },
+    w.id,
+    {
+      action: 'node',
+      payload: { teamId: f.team.id, id: 'first', text: '失敗しても保存済み' },
+      revision: w.revision,
+      requestId: id(),
+    },
+    { now: 1000 },
+  );
+  f.state.failPatch = true;
+  w = await f.n.content.flushScheduled(w.id, 11000);
+  assert.equal(w.documentSync.pending, true);
+  assert.equal(w.documentSync.queued, false);
+  assert.equal(w.documentSync.syncing, false);
+  assert.ok(w.documentSync.error);
+  assert.equal(w.teams[f.team.id].nodes.find((n) => n.id === 'first').text, '失敗しても保存済み');
+  assert.equal(f.n.content.due(90000), undefined);
+  w = await f.n.content.retry(w);
+  assert.equal(w.documentSync.pending, false);
+  assert.equal(text(f.find('first')), '失敗しても保存済み');
+});
+
+test('Notion待機同期: 再起動でも予約を失わず、送信途中の状態を10秒待機へ復旧する', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  w = await f.n.content.change(
+    { email: 'admin@example.test', admin: true },
+    w.id,
+    {
+      action: 'node',
+      payload: { teamId: f.team.id, id: 'first', text: '再起動前の編集' },
+      revision: w.revision,
+      requestId: id(),
+    },
+    { now: 1000 },
+  );
+  const restarted = new Notion(f.store, f.n.config, f.n.transport);
+  restarted.content.recoverScheduled(5000);
+  assert.equal(restarted.content.due(11000).id, w.id);
+  w.documentSync = { ...w.documentSync, queued: false, syncing: true };
+  f.store.put('workshops', w.id, w);
+  restarted.content.recoverScheduled(20000);
+  assert.equal(restarted.content.due(29999), undefined);
+  w = await restarted.content.flushScheduled(w.id, 30000);
+  assert.equal(w.documentSync.pending, false);
+  assert.equal(text(f.find('first')), '再起動前の編集');
+});
+
+test('Notion待機同期: 同期待ちの間のNotion外部更新は上書きせずローカル編集を保持する', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  w = await f.n.content.change(
+    { email: 'admin@example.test', admin: true },
+    w.id,
+    {
+      action: 'node',
+      payload: { teamId: f.team.id, id: 'first', text: 'ローカルの編集' },
+      revision: w.revision,
+      requestId: id(),
+    },
+    { now: 1000 },
+  );
+  f.find('first').toggle.rich_text = rt('Notionからの編集');
+  f.state.version++;
+  w = await f.n.content.flushScheduled(w.id, 11000);
+  assert.match(w.documentSync.error, /別途更新/);
+  assert.equal(w.teams[f.team.id].nodes.find((n) => n.id === 'first').text, 'ローカルの編集');
+  assert.equal(text(f.find('first')), 'Notionからの編集');
+  assert.equal(f.n.content.due(90000), undefined);
 });

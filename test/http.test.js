@@ -55,6 +55,45 @@ async function setup(t) {
   return { app, req, login, codes };
 }
 
+test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちでも連続編集できる', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test'),
+    ws = newWorkshop('待機同期', 'admin@example.test'),
+    team = Object.values(ws.teams)[0];
+  ws.notion = { pageId: 'test-page', checkedAt: Date.now() };
+  f.app.store.put('workshops', ws.id, ws);
+  f.app.store.put('kv', `notion-content:${ws.id}`, { doc: { sections: {} } });
+  let externalCalls = 0;
+  f.app.notion.transport = async () => {
+    externalCalls++;
+    throw Error('マップ操作では呼び出さない');
+  };
+  let current = ws;
+  for (const value of ['先に保存する', '続けて保存する']) {
+    const response = await f.req(
+      `/api/workshops/${ws.id}/action`,
+      {
+        action: 'node',
+        payload: { teamId: team.id, text: value, parent: null, group: 0 },
+        revision: current.revision,
+        requestId: id(),
+      },
+      admin,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.body.documentSync.queued, true);
+    current = response.body;
+  }
+  assert.equal(current.teams[team.id].nodes.length, 2);
+  const revision = current.revision;
+  assert.equal(
+    (await f.req(`/api/workshops/${ws.id}/content-activity`, { teamId: team.id }, admin)).status,
+    200,
+  );
+  assert.equal(f.app.store.get('workshops', ws.id).revision, revision);
+  assert.equal(externalCalls, 0);
+});
+
 test('HTTP: mdは管理者だけ編集可能。全チーム閲覧と越境変更・AIの拒否、分類確認と取り消し', async (t) => {
   const f = await setup(t),
     admin = await f.login('admin@example.test');

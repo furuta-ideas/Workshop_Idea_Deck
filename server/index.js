@@ -341,6 +341,11 @@ export function createApp(config = configuration(), overrides = {}) {
         json(res, view(await remote(() => notion.content.change(user, wsId, body)), user));
         return;
       }
+      if (route === 'content-activity' && req.method === 'POST') {
+        available();
+        json(res, notion.content.activity(user, wsId, body.teamId));
+        return;
+      }
       if (route === 'content-sync' && req.method === 'POST') {
         available();
         access(store, ws, user, true);
@@ -543,9 +548,17 @@ export function createApp(config = configuration(), overrides = {}) {
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);
         if (ws.notion && notion.content.state(ws)?.doc) {
-          ws.documentSync = { ...ws.documentSync, pending: true };
-          store.put('workshops', ws.id, ws);
-          ws = await remote(() => notion.content.push(ws));
+          if (
+            p.task === 'classify' ||
+            (p.task === 'transcribe' && p.destination === 'map') ||
+            ws.documentSync?.queued
+          )
+            ws = notion.content.schedule(ws);
+          else {
+            ws.documentSync = { ...ws.documentSync, pending: true };
+            store.put('workshops', ws.id, ws);
+            ws = await remote(() => notion.content.push(ws));
+          }
         }
         json(res, view(ws, user));
         return;
@@ -565,7 +578,17 @@ export function createApp(config = configuration(), overrides = {}) {
       if (!(e instanceof Fault)) console.error(e.name, e.message);
     }
   });
-  let interval;
+  let interval, contentInterval, contentTask;
+  const flushContent = () => {
+    if (notion.running || remoteWrite || contentTask) return;
+    const due = notion.content.due();
+    if (!due) return;
+    contentTask = remote(() => notion.content.flushScheduled(due.id))
+      .catch((e) => console.error('Notion content:', e.message))
+      .finally(() => {
+        contentTask = null;
+      });
+  };
   const maintenance = () => {
     if (notion.running || remoteWrite) return;
     for (const ws of store.all('workshops')) expire(store, ws);
@@ -589,15 +612,20 @@ export function createApp(config = configuration(), overrides = {}) {
     facilitator,
     start: async () => {
       await new Promise((r) => server.listen(config.port, config.host, r));
+      notion.content.recoverScheduled();
       maintenance();
       interval = setInterval(maintenance, config.pollSeconds * 1000);
       interval.unref();
+      contentInterval = setInterval(flushContent, 1000);
+      contentInterval.unref();
       return server.address();
     },
     close: async () => {
       clearInterval(interval);
+      clearInterval(contentInterval);
       await new Promise((r) => server.close(r));
       await notion.running;
+      await contentTask;
       store.close();
     },
   };
