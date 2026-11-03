@@ -1,11 +1,18 @@
 import { configuration, createApp } from './index.js';
 import { id, newWorkshop } from './store.js';
+const demoPort = Number(process.env.DEMO_PORT || 4317);
 const config = configuration({
   ...process.env,
   HOST: '127.0.0.1',
-  APP_ORIGIN: 'http://localhost:4317',
-  PORT: '4317',
-  DATA_DIR: './demo-data',
+  APP_ORIGIN: `http://localhost:${demoPort}`,
+  PORT: String(demoPort),
+  DATA_DIR: process.env.DEMO_DATA_DIR || './demo-data',
+  SECURE_COOKIE: 'false',
+  RP_ID: 'localhost',
+  SMTP_HOST: '',
+  SMTP_FROM: '',
+  SMTP_USER: '',
+  SMTP_PASSWORD: '',
   NOTION_TOKEN: '',
   NOTION_WORKSHOPS_SOURCE: '',
   AI_APPROVED_PROVIDERS: '[]',
@@ -44,4 +51,4 @@ if (!app.store.all('workshops').length) {
     });
 }
 await app.start();
-console.log('ローカル体験モード（本番認証・Notion・AI送信は無効）: http://localhost:4317');
+console.log(`ローカル体験モード（本番認証・Notion・AI送信は無効）: http://localhost:${demoPort}`);

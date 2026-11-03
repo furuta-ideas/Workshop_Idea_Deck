@@ -26,12 +26,15 @@ let me,
 const drafts = new Map();
 const invitation = new URL(location.href).searchParams.get('workshop');
 const titles = ['もやもやの言語化（N1）', 'カードの選択', 'カードの可視化', 'アイディアの投票'];
-const subtitles = [
-  '頭の中の小さな気づきを、言葉にしてつなげよう。',
-  '気になる言葉に、あなたの一票を。可能性の種を選ぼう。',
-  '選んだカードを組み合わせて、チームのアイディアを育てよう。',
-  'みんなのアイディアを見渡して、共感や期待を一票に。',
-];
+const adviceStates = new Map();
+let mapDragId = null,
+  mapConnectId = null,
+  recordingStarting = false,
+  inlineEdit = null,
+  mapObserver = null,
+  sessionEntered = false;
+const mapCollapsed = new Map();
+const advicePhases = ['ideation', 'selection', 'visualization', 'voting'];
 const brand = () =>
   '<div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><div class="brand-name">アイディアワークショップ支援ツール</div><div class="brand-sub">SMALL INSIGHTS. NEW POSSIBILITIES.</div></div></div>';
 function toast(message, error = false) {
@@ -87,7 +90,7 @@ function writable() {
   );
 }
 function editableTeam() {
-  return writable() && (me.admin || ws.myTeam === teamId);
+  return writable() && ws.myTeam === teamId;
 }
 const disabled = (ok) => (ok ? '' : ' disabled');
 function remember() {
@@ -118,19 +121,29 @@ async function action(action, payload) {
   pending = null;
   clearDraft();
   render();
+  scheduleAdvice(
+    {
+      node: payload.id ? 'card_updated' : 'card_created',
+      reparent: 'card_moved',
+      standalone: 'card_moved',
+      deleteNode: 'card_deleted',
+      deck: 'card_shortlisted',
+      discussion: 'visualization_updated',
+    }[action] || 'timer_tick',
+  );
   return result;
 }
 async function loadWorkshop(id) {
   remember();
   ws = await api(`/api/workshops/${id}`);
-  teamId =
-    ws.myTeam && ws.teams[ws.myTeam] ? ws.myTeam : me.admin ? Object.keys(ws.teams)[0] : null;
+  teamId = ws.myTeam && ws.teams[ws.myTeam] ? ws.myTeam : Object.keys(ws.teams)[0];
   selected = null;
   pending = null;
   editing = false;
   render();
 }
 async function enter() {
+  sessionEntered = true;
   me = await api('/api/me');
   workshops = await api('/api/workshops');
   const target =
@@ -144,7 +157,7 @@ async function enter() {
     render();
   }
 }
-function login() {
+function loginForm() {
   app.innerHTML = `<main class="login"><section class="login-story">${brand()}<div class="eyebrow">IDEA WORKSHOP</div><h1>ひとつの気づきが、<br>次のアイディアに。</h1><p class="lead">言葉にする。選び取る。組み合わせる。<br>一人ひとりの「もやもや」から、<br>チームで新しい可能性を見つけましょう。</p><div class="mini-notes" aria-hidden="true"><span class="g0">小さな<br>気づき</span><span class="g1">まだない<br>つながり</span><span class="g2">新しい<br>アイディア</span></div></section><section class="login-form"><span class="eyebrow">LET’S GET STARTED</span><h2>ワークショップへようこそ</h2><p class="muted">${invitation ? '招待されたワークショップの登録メールで参加してください。' : '登録済みのメールアドレスでログインしてください。'}</p><form id="login-form"><label for="email">メールアドレス</label><input id="email" type="email" autocomplete="username webauthn" placeholder="name@example.com" required maxlength="254"><div id="password-field"${invitation ? ' hidden' : ''}><label for="password">パスワード <span class="muted">設定済みの方</span></label><input id="password" type="password" autocomplete="current-password" maxlength="200"></div><div id="otp-field" hidden><label for="otp">メールに届いた6桁の認証コード</label><input id="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></div><div id="login-error" class="error" role="alert"></div><button class="primary" id="login-submit">認証コードを送信</button></form><button id="passkey-login" class="passkey">⌑ パスキーでログイン</button><div id="demo-area"></div><p class="login-foot">登録のないメールアドレスは利用できません。<br>参加登録や接続についてはファシリテーターへご連絡ください。</p></section></main>`;
   challenge = null;
   $('#login-form').onsubmit = async (e) => {
@@ -210,21 +223,33 @@ function login() {
     })
     .catch(() => {});
 }
+function login() {
+  sessionEntered = false;
+  ws = null;
+  app.innerHTML = `<main class="login-landing"><section class="login-card">${brand()}<div class="login-symbol" aria-hidden="true">✦</div><h1>アイディアワークショップ</h1><span class="security-pill">メールOTP・パスキー対応</span><h2>参加者ログイン</h2><p>登録されたアカウントで本人確認します。</p><button id="login-entry" class="primary">本人確認してログイン</button><p class="muted">小さな気づきから、新しい可能性へ。</p></section></main>`;
+  $('#login-entry').onclick = guarded(async () => {
+    try {
+      await enter();
+    } catch {
+      me = null;
+      loginForm();
+    }
+  });
+}
 function render() {
   if (!me) {
     login();
     return;
   }
   const t = team();
-  app.innerHTML = `<header class="topbar">${brand()}<div class="row"><span class="identity">${esc(me.email)}</span><button id="account" class="avatar" aria-label="アカウントとパスワード設定">${me.admin ? 'F' : 'P'}</button><button id="register-key" class="text-button" title="パスキーを登録">⌑ パスキー登録</button>${me.admin ? '<button id="settings" class="icon" aria-label="管理者設定">⚙</button>' : ''}<button id="logout" class="text-button">ログアウト</button></div></header>${me.demo ? '<div class="warning">ローカル体験モード — 体験用データを別フォルダーに保存しています。本番認証・Notion・AI送信は無効です。</div>' : ''}<div class="shell"><aside class="sidebar"><div><label for="workshop-select">WORKSHOP</label><select id="workshop-select" aria-label="ワークショップを選択">${workshops.map((w) => `<option value="${esc(w.id)}"${w.id === ws?.id ? ' selected' : ''}>${esc(w.name)}${w.deleted ? '（削除済み）' : ''}</option>`).join('')}</select>${me.admin ? '<button id="new-workshop" class="text-button new-workshop">＋ ワークショップを作成</button>' : ''}</div><div class="workspace-tag"><span class="eyebrow">TODAY’S THEME</span><br>${esc(ws?.theme || '新しいワークショップを始めましょう')}</div><div><label>TEAMS</label><div class="team-switch">${
+  app.innerHTML = `<header class="topbar">${brand()}<div class="row"><span class="identity">${esc(me.email)}</span><button id="account" class="avatar" aria-label="アカウントとパスワード設定">${me.admin ? 'F' : 'P'}</button><button id="register-key" class="text-button" title="パスキーを登録">⌑ パスキー登録</button>${me.admin ? '<button id="settings" class="icon" aria-label="管理者設定">⚙</button>' : ''}<button id="logout" class="text-button">ログアウト</button></div></header>${me.demo ? '<div class="warning">ローカル体験モード — 体験用データを別フォルダーに保存しています。本番認証・Notion・AI送信は無効です。</div>' : ''}<div class="shell"><aside class="sidebar"><div><label for="workshop-select">WORKSHOP</label><select id="workshop-select" aria-label="ワークショップを選択">${workshops.map((w) => `<option value="${esc(w.id)}"${w.id === ws?.id ? ' selected' : ''}>${esc(w.name)}${w.deleted ? '（削除済み）' : ''}</option>`).join('')}</select>${me.admin ? '<button id="new-workshop" class="text-button new-workshop">＋ ワークショップを作成</button>' : ''}</div><div class="workspace-tag"><span class="eyebrow">TODAY’S THEME</span><br>${esc(ws?.theme || '新しいワークショップを始めましょう')}</div>${sidebarStatus()}<div><label>TEAMS</label><div class="team-switch">${
     Object.values(ws?.teams || {})
-      .filter((t) => me.admin || t.id === ws.myTeam)
       .map(
         (t, i) =>
-          `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '↗'}</span></button>`,
+          `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.3</div></aside><main class="main">${ws ? `<div class="page-top"><div><div class="eyebrow">WORKSHOP / ${esc(t?.name || 'チーム未設定')}</div><h1>${titles[tab]}</h1><p>${subtitles[tab]}</p><div class="ws-meta"><span class="pill">${esc(ws.status)}</span><span>${esc(ws.role)}</span>${ws.endDate ? `<span>期限 ${esc(ws.endDate)}</span>` : ''}</div></div><div class="row"><span class="eyebrow">STEP 0${tab + 1} / 04</span></div></div><nav class="tabbar" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section><div class="footer-note"><span>● 入力内容はサーバーへ保存され、チームで共有されます</span><span>AI提案はプレビュー後に適用 · 自動フォールバックなし</span></div>` : emptyWorkshopView()}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.4</div></aside><main class="main">${ws ? `<nav class="tabbar" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}<div class="footer-note"><span>● 入力内容はサーバーへ保存され、チームで共有されます</span><span>AI提案はプレビュー後に適用 · 自動フォールバックなし</span></div>` : emptyWorkshopView()}</main></div>`;
   $('#account').onclick = accountDialog;
   $('#logout').onclick = guarded(async () => {
     stopRecording();
@@ -245,28 +270,34 @@ function render() {
     if ($('#create-first')) $('#create-first').onclick = newWorkshopDialog;
   }
   $('#workshop-select').onchange = guarded(async (e) => {
+    if (inlineEdit && !(await commitInline())) return;
     stopRecording();
     await loadWorkshop(e.target.value);
   });
   $$('[data-team]').forEach(
     (b) =>
-      (b.onclick = () => {
+      (b.onclick = guarded(async () => {
+        if (inlineEdit && !(await commitInline())) return;
         remember();
         stopRecording();
+        mapConnectId = null;
         teamId = b.dataset.team;
         selected = null;
         editing = false;
         render();
-      }),
+      })),
   );
   $$('[data-tab]').forEach(
     (b) =>
-      (b.onclick = () => {
+      (b.onclick = guarded(async () => {
+        if (inlineEdit && !(await commitInline())) return;
         remember();
+        stopRecording();
+        mapConnectId = null;
         tab = Number(b.dataset.tab);
         editing = false;
         render();
-      }),
+      })),
   );
   if (t || tab === 3) {
     bindStep();
@@ -278,6 +309,8 @@ function render() {
       }),
     );
   }
+  bindAdvice();
+  scheduleAdvice('phase_entered');
   showPending();
   updateClocks();
 }
@@ -324,25 +357,282 @@ function stepContent() {
   if (tab === 2) return deckView();
   return ideaView();
 }
+function mapNodes() {
+  const nodes = [...team().nodes];
+  if (inlineEdit?.isNew && inlineEdit.wsId === ws.id && inlineEdit.teamId === teamId) {
+    const draft = {
+      id: inlineEdit.id,
+      text: inlineEdit.text,
+      parent: inlineEdit.parent,
+      group: inlineEdit.group,
+    };
+    const anchor = nodes.findIndex((n) => n.id === inlineEdit.anchorId);
+    if (anchor < 0) nodes.push(draft);
+    else {
+      const descendants = new Set([inlineEdit.anchorId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const n of nodes)
+          if (descendants.has(n.parent) && !descendants.has(n.id)) {
+            descendants.add(n.id);
+            changed = true;
+          }
+      }
+      let at = anchor;
+      nodes.forEach((n, i) => {
+        if (descendants.has(n.id)) at = i;
+      });
+      nodes.splice(at + 1, 0, draft);
+    }
+  }
+  return nodes;
+}
+function collapsedTopics() {
+  const key = adviceKey();
+  if (!mapCollapsed.has(key)) mapCollapsed.set(key, new Set());
+  return mapCollapsed.get(key);
+}
+function descendantCount(id, nodes = team().nodes) {
+  const visited = new Set();
+  let frontier = [id];
+  while (frontier.length) {
+    const next = [];
+    for (const n of nodes)
+      if (frontier.includes(n.parent) && !visited.has(n.id)) {
+        visited.add(n.id);
+        next.push(n.id);
+      }
+    frontier = next;
+  }
+  return visited.size;
+}
 function mapView() {
   const t = team(),
-    node = t.nodes.find((n) => n.id === selected);
-  const branch = (parent, depth = 0) => {
-    if (depth > 50) return '';
-    const children = t.nodes.filter((n) => n.parent === parent);
-    if (!children.length) return '';
-    return `<ul class="branches">${children.map((n) => `<li><button class="node g${n.group} ${selected === n.id ? 'selected' : ''}" data-node="${n.id}">${esc(n.text)}</button>${branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
+    nodes = mapNodes(),
+    closed = collapsedTopics(),
+    canEdit = editableTeam();
+  const topic = (n, depth) => {
+    const edit = inlineEdit?.id === n.id;
+    return `<div class="topic-box depth-${Math.min(4, depth)}"><${edit ? 'input' : 'button'} class="node ${selected === n.id ? 'selected' : ''} ${edit ? 'topic-editor' : ''}" ${edit ? `id="topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="トピックを編集"` : `data-node="${n.id}" data-map-target="${n.id}" draggable="${canEdit}" title="ダブルクリックで編集。Enterで同じ階層、Insertで子トピック"`} data-depth="${depth}" data-topic-id="${n.id}">${edit ? '' : `<span><i class="node-group g${n.group || 0}" aria-hidden="true"></i>${esc(n.text)}</span></button>`}${edit ? '' : nodes.some((c) => c.parent === n.id) ? `<button class="topic-toggle" data-collapse="${n.id}" aria-label="${esc(n.text)}を${closed.has(n.id) ? '展開' : '折り畳む'}" aria-expanded="${!closed.has(n.id)}">${closed.has(n.id) ? descendantCount(n.id, nodes) : '−'}</button>` : ''}</div>`;
   };
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div><div class="map-scroll"><div class="mindmap" id="mindmap"><div class="map-root">${esc(ws.theme)}</div>${branch(null)}${!t.nodes.length ? '<div class="empty">右の入力欄から、最初の気づきを追加しましょう。</div>' : ''}</div></div></div><form class="panel inspector" id="node-form"><div class="row between"><h3>${node ? '気づきを編集' : '気づきを追加'}</h3><button type="button" id="new-node" class="text-button">＋ 新規</button></div><p>気になったこと、感じたことを自由に。<br>親項目を選ぶと、言葉をつなげられます。</p><div class="fields"><div><label for="node-text">言葉・気づき</label><textarea id="node-text" data-draft="node-text" maxlength="500" placeholder="どんなことが気になる？" required${disabled(editableTeam())}>${esc(node?.text || '')}</textarea></div><div><label for="node-parent">親となる項目</label><select id="node-parent" data-draft="node-parent"${disabled(editableTeam())}><option value="">テーマに直接つなぐ</option>${t.nodes
-    .filter((n) => n.id !== selected)
-    .map(
-      (n) =>
-        `<option value="${n.id}"${node?.parent === n.id ? ' selected' : ''}>${esc(n.text.slice(0, 28))}</option>`,
-    )
-    .join(
-      '',
-    )}</select><label>グループの色</label><div class="colors">${Array.from({ length: 8 }, (_, i) => `<button type="button" class="color g${i} ${(node?.group ?? color) === i ? 'active' : ''}" data-color="${i}" aria-label="色グループ${i + 1}" aria-pressed="${(node?.group ?? color) === i}"${disabled(editableTeam())}></button>`).join('')}</div></div></div><button class="primary"${disabled(editableTeam())}>${node ? '変更を保存' : '＋ マップに追加'}</button>${node ? `<button type="button" id="delete-node" class="text-button danger"${disabled(editableTeam())}>この項目を削除</button><button type="button" id="add-child" class="text-button"${disabled(editableTeam())}>＋ 子項目を追加</button>` : ''}</form></div><div class="ai-strip"><div class="ai-icon" aria-hidden="true">✧</div><div class="ai-content"><h3>AIと、視点をひろげる</h3><p>${t.nodes.length >= 21 ? '21件以上の気づきが集まりました。4つの視点などに整理すると、つながりが見つかります。' : '「誰の、どんな場面？」を考えながら、気づきを増やしましょう。'}</p><small class="muted">${aiStatus('questions')}</small></div><div class="ai-buttons"><button data-ai="questions"${disabled(editableTeam() && aiAvailable('questions'))}>✧ 別の視点を探す</button><button data-ai="classify"${disabled(editableTeam() && aiAvailable('classify'))}>グループを整理</button><button data-ai="transcribe" id="map-record"${disabled(editableTeam() && aiAvailable('transcribe'))}>◉ 音声入力</button></div></div>`;
+  const branch = (parent, depth = 1) => {
+    if (depth > 500) return '';
+    const children = nodes.filter((n) => n.parent === parent);
+    if (!children.length) return '';
+    return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
+  };
+  const rootEdit = inlineEdit?.id === 'theme';
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  <div class="map-scroll"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme') ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div><div class="loose-area" data-map-zone="detach"><div class="loose-heading"><strong>単独の気づき</strong><span>${nodes.filter((n) => n.parent === null).length}件</span></div><p class="map-hint">新しい気づきは下へ順に追加</p>${branch(null)}${nodes.some((n) => n.parent === null) ? '' : '<div class="loose-empty">＋<br>新しい気づき、または<br>切り離す枝をここへ</div>'}</div></div></div>
+  <div class="map-actions"><span class="map-help">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · ドラッグ：移動'}</span><button type="button" data-map-zone="standalone"${disabled(canEdit)}>◇ 単独に</button><button type="button" class="danger" data-map-zone="delete"${disabled(canEdit)}>⌫ 削除</button></div></div>${inspectorView()}</div>`;
 }
+function inspectorView() {
+  const node = team().nodes.find((n) => n.id === selected),
+    canEdit = editableTeam();
+  return `<form class="panel inspector" id="node-form"><div class="row between"><h3>${node ? '気づきを編集' : '気づきを追加'}</h3><button type="button" id="new-node" class="text-button"${disabled(canEdit)}>＋ 新規</button></div><p>気になったこと、感じたことを自由に。<br>追加後にドラッグしてつなげられます。</p><div class="field-label"><label for="node-text">言葉・気づき</label><button type="button" id="map-record" class="mic-button ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" aria-pressed="${recording?.destination === 'map'}" aria-describedby="voice-status"${disabled((canEdit && !recordingStarting) || recording?.destination === 'map')}>${micIcon()}<span>${recording?.destination === 'map' ? '停止' : '音声入力'}</span></button></div><textarea id="node-text" data-draft="node-text" maxlength="500" placeholder="どんなことが気になる？" required${disabled(canEdit)}>${esc(node?.text || '')}</textarea><p id="voice-status" class="voice-status">${aiAvailable('transcribe') ? 'マイクで録音し、停止後に内容を確認して入力できます。' : '音声入力は、認可済みAIの接続設定後に利用できます。'}</p><label>グループの色</label><div class="colors">${Array.from({ length: 8 }, (_, i) => `<button type="button" class="color g${i} ${(node?.group ?? color) === i ? 'active' : ''}" data-color="${i}" aria-label="色グループ${i + 1}" aria-pressed="${(node?.group ?? color) === i}"${disabled(canEdit)}></button>`).join('')}</div><button class="primary"${disabled(canEdit)}>${node ? '変更を保存' : '＋ マップに追加'}</button>${node ? `<div class="node-commands"><button type="button" id="connect-node"${disabled(canEdit)}>${mapConnectId ? '接続先の選択をやめる' : '↗ 接続先を選ぶ'}</button><button type="button" id="add-sibling"${disabled(canEdit)}>同階層を追加（Enter）</button><button type="button" id="add-child-topic"${disabled(canEdit)}>子を追加（Insert）</button><button type="button" id="detach-node"${disabled(canEdit && node.parent !== null)}>枝ごと切り離す</button><button type="button" id="single-node"${disabled(canEdit)}>この項目だけ単独にする</button><button type="button" id="delete-node" class="danger"${disabled(canEdit)}>この項目を削除</button></div>` : ''}</form>`;
+}
+function drawMapLinks() {
+  const canvas = $('#mindmap'),
+    svg = $('#map-links');
+  if (!canvas || !svg) return;
+  const base = canvas.getBoundingClientRect(),
+    paths = [];
+  const all = mapNodes();
+  for (const button of $$('[data-topic-id]')) {
+    const n = all.find((x) => x.id === button.dataset.topicId);
+    if (!n?.parent) continue;
+    const parent = n.parent === 'theme' ? $('.map-root') : $(`[data-topic-id="${n.parent}"]`);
+    if (!parent) continue;
+    const a = parent.getBoundingClientRect(),
+      b = button.getBoundingClientRect();
+    const x1 = (a.right - base.left) / zoom,
+      y1 = (a.top + a.height / 2 - base.top) / zoom,
+      x2 = (b.left - base.left) / zoom,
+      y2 = (b.top + b.height / 2 - base.top) / zoom;
+    const depth = Number(button.dataset.depth),
+      color =
+        depth === 1 ? '#181192' : depth === 2 ? '#8f2114' : depth === 3 ? '#f15e51' : '#82786c';
+    paths.push(
+      `<path d="M${x1},${y1} C${x1 + (x2 - x1) * 0.55},${y1} ${x1 + (x2 - x1) * 0.45},${y2} ${x2},${y2}" stroke="${color}" stroke-width="${depth === 1 ? 3.2 : 1.2}" fill="none"/>`,
+    );
+  }
+  svg.setAttribute('width', String(canvas.scrollWidth));
+  svg.setAttribute('height', String(canvas.scrollHeight));
+  svg.innerHTML = paths.join('');
+}
+
+function micIcon() {
+  return '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="2" width="8" height="13" rx="4"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>';
+}
+function robotIcon() {
+  return '<svg viewBox="0 0 88 88" width="76" height="76" fill="none" aria-hidden="true"><path d="M44 18V9" stroke="#187c72" stroke-width="4"/><circle cx="44" cy="7" r="5" fill="#e8b852"/><rect x="14" y="20" width="60" height="48" rx="18" fill="#d9f0eb" stroke="#247d75" stroke-width="3"/><rect x="23" y="30" width="42" height="25" rx="10" fill="#fff"/><circle cx="34" cy="41" r="4" fill="#226259"/><circle cx="54" cy="41" r="4" fill="#226259"/><path d="M36 51q8 7 16 0" stroke="#226259" stroke-width="3" stroke-linecap="round"/><path d="M7 35v16M81 35v16M31 73l-3 8M57 73l3 8" stroke="#247d75" stroke-width="5" stroke-linecap="round"/><circle cx="21" cy="53" r="4" fill="#f2b2a0"/><circle cx="67" cy="53" r="4" fill="#f2b2a0"/></svg>';
+}
+function adviceKey() {
+  return `${ws.id}/${teamId}`;
+}
+function adviceState() {
+  const key = `${adviceKey()}/${tab}`;
+  if (!adviceStates.has(key))
+    adviceStates.set(key, {
+      enteredAt: Date.now(),
+      lastChangedAt: Date.now(),
+      muted: sessionStorage.getItem('facilitator-muted') === 'true',
+    });
+  return adviceStates.get(key);
+}
+function adviceView() {
+  if (!team()) return '';
+  const s = adviceState(),
+    message = s.response,
+    show =
+      !s.muted &&
+      !((tab === 1 || tab === 3) && votingOpen(tab === 1 ? 'cards' : 'ideas')) &&
+      message?.should_speak &&
+      (s.manual || s.expires > Date.now());
+  return `<section class="ai-advice ${s.muted ? 'muted-robot' : ''}" aria-label="AIアドバイス"><div class="robot-avatar robot-${s.muted ? 'muted' : s.busy ? 'thinking' : show ? message.robot_animation : 'observing'}">${robotIcon()}</div><div class="advice-body"><div class="row between"><h3>AIアドバイス <span class="guide-label">${message?.source === 'ai' ? '認可済みAI' : 'md基本ガイド'}</span></h3><button id="mute-advice" class="text-button" aria-pressed="${s.muted}">${s.muted ? '助言を再開' : '助言をミュート'}</button></div>${show ? `<div class="robot-bubble" role="status" aria-live="polite"><p id="advice-message">${esc(message.bubble_text)}</p><div class="row"><button id="dismiss-advice" class="text-button">閉じる</button><button id="later-advice" class="text-button">あとで</button><button id="answer-advice" class="text-button">考えを入力する ↗</button>${message.proposal ? '<button id="preview-clusters">分類案を確認</button>' : ''}</div></div>` : `<p class="muted">${s.muted ? '助言を休止しています。' : s.busy ? 'チームの内容を確認しています…' : '必要なときに短い問いで、発想や整理をお手伝いします。'}</p>`}<div class="row advice-actions"><button id="next-advice"${disabled(editableTeam() && !s.muted && !s.busy)}>助言をもらう</button>${tab === 0 ? `<button id="classify-advice"${disabled(editableTeam() && aiAvailable('classify'))}>グループ整理案</button>${team().lastGrouping ? `<button id="undo-classify"${disabled(editableTeam())}>分類を元に戻す</button>` : ''}` : ''}<span class="muted">${aiAvailable('questions') ? '管理者設定のmdを読み込んで助言します。' : 'AI未接続：管理者設定のmdにある基本ガイドを表示します。'}</span></div></div></section>`;
+}
+function refreshAdvice() {
+  const el = $('.ai-advice');
+  if (el && team()) {
+    el.outerHTML = adviceView();
+    bindAdvice();
+  }
+}
+function bindAdvice() {
+  if (!$('#next-advice')) return;
+  $('#next-advice').onclick = guarded(() => requestAdvice('help_requested'));
+  $('#mute-advice').onclick = () => {
+    const s = adviceState();
+    s.muted = !s.muted;
+    for (const state of adviceStates.values()) {
+      state.muted = s.muted;
+      state.response = null;
+    }
+    sessionStorage.setItem('facilitator-muted', String(s.muted));
+    s.response = null;
+    refreshAdvice();
+  };
+  const feedback = (action) =>
+    guarded(async () => {
+      const s = adviceState(),
+        m = s.response;
+      s.response = null;
+      if (action === 'later') s.snooze = Date.now() + 90000;
+      refreshAdvice();
+      if (m)
+        await api(`/api/workshops/${ws.id}/advice-feedback`, {
+          phase: advicePhases[tab],
+          messageId: m.message_id,
+          action,
+        });
+    });
+  if ($('#dismiss-advice')) $('#dismiss-advice').onclick = feedback('dismiss');
+  if ($('#later-advice')) $('#later-advice').onclick = feedback('later');
+  if ($('#answer-advice'))
+    $('#answer-advice').onclick = () => {
+      const input = $('#node-text') || $('#what');
+      input?.focus();
+      input?.scrollIntoView({ block: 'nearest' });
+    };
+  if ($('#classify-advice')) $('#classify-advice').onclick = guarded(() => runAI('classify'));
+  if ($('#undo-classify'))
+    $('#undo-classify').onclick = guarded(() => action('undoClassification', { teamId }));
+  if ($('#preview-clusters'))
+    $('#preview-clusters').onclick = () => {
+      const m = adviceState().response;
+      openDialog(
+        `<h2>グループ整理案</h2>${m.suggested_clusters.map((g) => `<h3>${esc(g.name)}</h3><ul>${g.nodeIds.map((id) => `<li>${esc(team().nodes.find((n) => n.id === id)?.text)}</li>`).join('')}</ul>`).join('')}<p class="muted">未分類の項目はそのまま残します。色の変更のみ適用します。</p><button id="apply-clusters" class="primary">確認して分類を適用</button>`,
+      );
+      $('#apply-clusters').onclick = guarded(async () => {
+        ws = await api(`/api/workshops/${ws.id}/apply`, { proposal: m.proposal });
+        modal.close();
+        render();
+      });
+    };
+}
+async function requestAdvice(event) {
+  if (!ws || !team() || !editableTeam()) return;
+  const s = adviceState(),
+    manual = event === 'help_requested';
+  if (
+    s.busy ||
+    s.muted ||
+    s.snooze > Date.now() ||
+    modal.open ||
+    inlineEdit ||
+    editing ||
+    mapDragId ||
+    recording ||
+    recordingStarting ||
+    ((tab === 1 || tab === 3) && votingOpen(tab === 1 ? 'cards' : 'ideas'))
+  )
+    return;
+  if (s.response && (s.manual || s.expires > Date.now())) {
+    if (!manual) return;
+    s.response = null;
+  }
+  const key = `${adviceKey()}/${tab}`,
+    phase = advicePhases[tab],
+    workshop = ws.id,
+    group = teamId;
+  s.busy = true;
+  refreshAdvice();
+  try {
+    const response = await api(`/api/workshops/${workshop}/advice`, {
+      teamId: group,
+      phase,
+      event,
+      enteredAt: s.enteredAt,
+      lastChangedAt: s.lastChangedAt,
+      ui: {
+        robot_muted: s.muted,
+        user_is_typing: editing,
+        user_is_dragging: !!mapDragId,
+        bubble_visible: false,
+      },
+    });
+    if (key !== `${adviceKey()}/${tab}` || editing || inlineEdit || mapDragId || modal.open) return;
+    if (response.should_speak) {
+      s.response = response;
+      s.manual = manual;
+      s.expires = Date.now() + response.duration_ms;
+      if (!manual)
+        setTimeout(() => {
+          if (s.response === response) {
+            s.response = null;
+            if (ws?.id === workshop && teamId === group && advicePhases[tab] === phase)
+              refreshAdvice();
+          }
+        }, response.duration_ms);
+    }
+  } catch (e) {
+    if (manual) toast(e.message, true);
+  } finally {
+    s.busy = false;
+    if (ws?.id === workshop && teamId === group) refreshAdvice();
+  }
+}
+function scheduleAdvice(event) {
+  if (!ws || !team()) return;
+  const s = adviceState();
+  if (event !== 'phase_entered') s.lastChangedAt = Date.now();
+  if (event === 'phase_entered') {
+    if (s.entered) return;
+    s.entered = true;
+  }
+  setTimeout(() => void requestAdvice(event), 700);
+}
+
+function sidebarStatus() {
+  if (!ws) return '';
+  return `<div class="sidebar-meta"><span class="pill">${esc(ws.status)}</span><span>${esc(ws.role)}</span>${ws.endDate ? `<small>期限 ${esc(ws.endDate)}</small>` : ''}</div>`;
+}
+function teamNotice() {
+  if (!team() || ws.myTeam === teamId) return '';
+  return `<div class="notice team-readonly"><strong>${esc(team().name)}を閲覧中</strong><span>このチームは閲覧のみです。編集・カード投票は自分のチームで行ってください。</span></div>`;
+}
+
 function aiAvailable(task) {
   return me.ai.approved.some(
     (p) =>
@@ -400,74 +690,311 @@ function ideaView() {
   const teams = Object.values(ws.teams).filter((t) => t.image);
   return `${timerView('ideas')}<div class="panel"><div class="panel-title"><h3>チームのアイディア <span class="muted">${teams.length} 件</span></h3><span class="muted">自チームにも投票できます</span></div>${teams.length ? `<div class="ideas-grid">${teams.map((t) => `<article class="idea"><span class="badge">${ws.votes.ideas.totals[t.id] || 0}</span><button class="image-open" data-image="${t.id}" aria-label="${esc(t.name)}の画像を拡大"><img src="data:image/png;base64,${t.image.base64}" alt="${esc(t.discussion.what || t.name + 'のアイディア')}"></button><div class="idea-body"><h3>${esc(t.name)}${t.id === ws.myTeam ? ' <span class="pill">あなたのチーム</span>' : ''}</h3><p>${esc(t.discussion.what || 'チームのアイディア')}</p><div class="sticky-votes"><button data-vote="ideas" data-target="${t.id}" data-delta="-1" aria-label="${esc(t.name)}の投票を取り消す"${disabled(votingOpen('ideas') && (ws.votes.ideas.mine[t.id] || 0) > 0)}>−</button><span>あなたの投票 ${ws.votes.ideas.mine[t.id] || 0}</span><button data-vote="ideas" data-target="${t.id}" data-delta="1" aria-label="${esc(t.name)}へ投票する"${disabled(votingOpen('ideas'))}>＋</button></div></div></article>`).join('')}</div>` : '<div class="empty"><span class="symbol">▧</span><strong>チームのアイディアが、ここに集まります。</strong>③で生成した画像を、全チームで見比べられます。<br>画像生成の接続と認可が未設定の間も、議論の文章は保存できます。</div>'}</div>`;
 }
-function bindStep() {
-  $$('[data-node]').forEach(
+function selectTopic(id) {
+  selected = id;
+  color = team().nodes.find((n) => n.id === id)?.group ?? color;
+  $$('[data-node],.map-root').forEach((b) =>
+    b.classList.toggle('selected', (b.dataset.node || 'theme') === id),
+  );
+  if ($('#node-form')) {
+    clearDraft();
+    $('#node-form').outerHTML = inspectorView();
+    bindInspector();
+  }
+}
+function beginInline(id, placement) {
+  if (!editableTeam() || recording || recordingStarting) return;
+  if (inlineEdit) return;
+  if (editing) return toast('入力欄の内容を保存してからトピックを編集してください', true);
+  const anchor = team().nodes.find((n) => n.id === id);
+  const isNew = !!placement;
+  inlineEdit = {
+    id: isNew ? crypto.randomUUID() : id,
+    isNew,
+    anchorId: id,
+    placement,
+    wsId: ws.id,
+    teamId,
+    text: isNew ? '' : id === 'theme' ? team().rootText || ws.theme : anchor?.text || '',
+    parent: isNew
+      ? id === 'theme'
+        ? 'theme'
+        : placement === 'child'
+          ? id
+          : anchor?.parent
+      : anchor?.parent,
+    group: anchor?.group || 0,
+  };
+  if (isNew) collapsedTopics().delete(inlineEdit.parent);
+  selected = inlineEdit.id;
+  render();
+}
+async function commitInline() {
+  const edit = inlineEdit;
+  if (!edit) return true;
+  if (edit.saving) return false;
+  if (!edit.text.trim()) {
+    inlineEdit = null;
+    editing = false;
+    render();
+    return true;
+  }
+  edit.saving = true;
+  try {
+    const before = new Set(team().nodes.map((n) => n.id));
+    const result = await api(`/api/workshops/${edit.wsId}/action`, {
+      action: edit.isNew ? 'createTopic' : edit.id === 'theme' ? 'topicTheme' : 'node',
+      payload: {
+        teamId: edit.teamId,
+        id: edit.id,
+        text: edit.text,
+        placement: edit.placement,
+        anchorId: edit.anchorId,
+      },
+      revision: ws.revision,
+      requestId: crypto.randomUUID(),
+    });
+    inlineEdit = null;
+    ws = result;
+    selected = edit.isNew ? team().nodes.find((n) => !before.has(n.id))?.id : edit.id;
+    clearDraft();
+    render();
+    scheduleAdvice(edit.isNew ? 'card_created' : 'card_updated');
+    return true;
+  } catch (e) {
+    edit.saving = false;
+    toast(e.message, true);
+    $('#topic-editor')?.focus();
+    return false;
+  }
+}
+function bindInspector() {
+  $('#new-node').onclick = () => {
+    stopRecording();
+    clearDraft();
+    selected = null;
+    mapConnectId = null;
+    render();
+    $('#node-text').focus();
+  };
+  $$('[data-color]').forEach(
     (b) =>
       (b.onclick = () => {
-        clearDraft();
-        selected = b.dataset.node;
-        color = team().nodes.find((n) => n.id === selected).group;
+        color = Number(b.dataset.color);
+        editing = true;
+        $$('[data-color]').forEach((el) => {
+          el.classList.toggle('active', el === b);
+          el.setAttribute('aria-pressed', String(el === b));
+        });
+      }),
+  );
+  $('#node-text').oninput = () => {
+    editing = true;
+    remember();
+  };
+  $('#node-form').onsubmit = guarded(async (e) => {
+    e.preventDefault();
+    const payload = {
+      teamId,
+      id: selected === 'theme' ? null : selected,
+      text: $('#node-text').value,
+      group: color,
+    };
+    await action('node', payload);
+    selected = null;
+    mapConnectId = null;
+    render();
+    $('#node-text').focus();
+  });
+  $('#map-record').onclick = guarded(() => recordAudio('map'));
+  if ($('#connect-node'))
+    $('#connect-node').onclick = () => {
+      if (editing) return toast('編集を保存してから接続先を選んでください', true);
+      mapConnectId = mapConnectId ? null : selected;
+      render();
+    };
+  if ($('#add-sibling')) $('#add-sibling').onclick = () => beginInline(selected, 'sibling');
+  if ($('#add-child-topic')) $('#add-child-topic').onclick = () => beginInline(selected, 'child');
+  if ($('#detach-node')) $('#detach-node').onclick = guarded(() => moveMapNode(selected, null));
+  if ($('#single-node'))
+    $('#single-node').onclick = guarded(() => moveMapNode(selected, null, true));
+  if ($('#delete-node')) $('#delete-node').onclick = () => confirmDeleteNode(selected);
+}
+function bindMap() {
+  $('#mindmap').style.transform = `scale(${zoom})`;
+  const zoomTo = (n) => {
+    zoom = Math.min(1.5, Math.max(0.5, n));
+    $('#mindmap').style.transform = `scale(${zoom})`;
+    $('#zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+    drawMapLinks();
+  };
+  $('#zoom-in').onclick = () => zoomTo(zoom + 0.1);
+  $('#zoom-out').onclick = () => zoomTo(zoom - 0.1);
+  $('#collapse-all').onclick = () => {
+    for (const n of team().nodes) collapsedTopics().add(n.id);
+    collapsedTopics().add('theme');
+    render();
+  };
+  $('#expand-all').onclick = () => {
+    collapsedTopics().clear();
+    render();
+  };
+  $$('[data-collapse]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        const closed = collapsedTopics(),
+          id = b.dataset.collapse;
+        closed.has(id) ? closed.delete(id) : closed.add(id);
         render();
       }),
   );
-  if (tab === 0) {
-    $('#mindmap').style.transform = `scale(${zoom})`;
-    $('#zoom-in').onclick = () => {
-      zoom = Math.min(1.5, zoom + 0.1);
-      $('#mindmap').style.transform = `scale(${zoom})`;
-      $('#zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+  bindInspector();
+  const input = $('#topic-editor');
+  if (input) {
+    const resize = () => {
+      input.style.width = `${Math.max(
+        120,
+        Math.min(
+          2400,
+          [...input.value].reduce((n, c) => n + (/[^\x00-\xff]/.test(c) ? 24 : 14), 36),
+        ),
+      )}px`;
+      drawMapLinks();
     };
-    $('#zoom-out').onclick = () => {
-      zoom = Math.max(0.5, zoom - 0.1);
-      $('#mindmap').style.transform = `scale(${zoom})`;
-      $('#zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+    input.oninput = () => {
+      inlineEdit.text = input.value;
+      editing = true;
+      resize();
     };
-    $('#new-node').onclick = () => {
-      clearDraft();
-      selected = null;
-      render();
-      $('#node-text').focus();
-    };
-    $$('[data-color]').forEach(
-      (b) =>
-        (b.onclick = () => {
-          color = Number(b.dataset.color);
-          $$('[data-color]').forEach((el) => {
-            el.classList.toggle('active', el === b);
-            el.setAttribute('aria-pressed', String(el === b));
-          });
-        }),
-    );
-    $('#node-form').onsubmit = guarded(async (e) => {
-      e.preventDefault();
-      await action('node', {
-        teamId,
-        id: selected,
-        text: $('#node-text').value,
-        parent: $('#node-parent').value || null,
-        group: color,
-      });
-      selected = null;
-      render();
-      $('#node-text').focus();
-    });
-    if ($('#delete-node'))
-      $('#delete-node').onclick = guarded(async () => {
-        await action('deleteNode', { teamId, id: selected });
-        selected = null;
-        render();
-      });
-    if ($('#add-child'))
-      $('#add-child').onclick = () => {
-        const parent = selected;
+    input.onkeydown = guarded(async (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        inlineEdit = null;
         clearDraft();
-        selected = null;
         render();
-        $('#node-parent').value = parent;
-        $('#node-text').focus();
-      };
-    $('#map-record').onclick = guarded(() => recordAudio('map'));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (await commitInline()) beginInline(selected, 'sibling');
+      } else if (e.key === 'Insert') {
+        e.preventDefault();
+        if (await commitInline()) beginInline(selected, 'child');
+      }
+    });
+    input.onblur = () => {
+      if (inlineEdit && !inlineEdit.saving) void commitInline();
+    };
+    resize();
+    input.focus();
+    input.select();
   }
+  $$('[data-map-target]').forEach((button) => {
+    const id = button.dataset.mapTarget;
+    button.onclick = guarded(async () => {
+      if (mapConnectId) {
+        const source = mapConnectId;
+        mapConnectId = null;
+        if (source !== id) await moveMapNode(source, id);
+        return;
+      }
+      if (inlineEdit) return;
+      if (editing && selected !== id) return toast('入力欄の内容を保存してください', true);
+      selectTopic(id);
+    });
+    button.ondblclick = () => beginInline(id);
+    button.onkeydown = (e) => {
+      if (e.isComposing) return;
+      if (['Enter', 'Insert', 'F2', 'Delete'].includes(e.key)) {
+        e.preventDefault();
+        if (e.key === 'Delete' && id !== 'theme') confirmDeleteNode(id);
+        else
+          beginInline(id, e.key === 'Enter' ? 'sibling' : e.key === 'Insert' ? 'child' : undefined);
+      }
+    };
+    if (id === 'theme') return;
+    button.ondragstart = (e) => {
+      if (!editableTeam() || editing || inlineEdit) {
+        e.preventDefault();
+        return;
+      }
+      mapDragId = id;
+      e.dataTransfer.setData('application/x-workshop-node', id);
+      e.dataTransfer.effectAllowed = 'move';
+      button.classList.add('dragging');
+    };
+    button.ondragend = () => {
+      mapDragId = null;
+      $$('.map-drop-active,.dragging').forEach((el) =>
+        el.classList.remove('map-drop-active', 'dragging'),
+      );
+    };
+  });
+  $$('[data-map-target],[data-map-zone]').forEach((target) => {
+    target.ondragover = (e) => {
+      if (editableTeam() && mapDragId) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        target.classList.add('map-drop-active');
+      }
+    };
+    target.ondragleave = (e) => {
+      if (!target.contains(e.relatedTarget)) target.classList.remove('map-drop-active');
+    };
+    target.ondrop = guarded(async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      target.classList.remove('map-drop-active');
+      const id = e.dataTransfer?.getData('application/x-workshop-node') || mapDragId;
+      mapDragId = null;
+      if (!editableTeam() || !team().nodes.some((n) => n.id === id)) return;
+      if (target.dataset.mapZone === 'delete') return confirmDeleteNode(id);
+      if (target.dataset.mapTarget === id) return;
+      await moveMapNode(
+        id,
+        e.shiftKey ? null : target.dataset.mapTarget || null,
+        target.dataset.mapZone === 'standalone',
+      );
+    });
+    if (target.dataset.mapZone && target.tagName === 'BUTTON')
+      target.onclick = guarded(async () => {
+        if (!selected || selected === 'theme') return toast('操作するトピックを選択してください');
+        if (target.dataset.mapZone === 'delete') confirmDeleteNode(selected);
+        else await moveMapNode(selected, null, true);
+      });
+  });
+  requestAnimationFrame(drawMapLinks);
+  mapObserver?.disconnect();
+  if (window.ResizeObserver) {
+    mapObserver = new ResizeObserver(drawMapLinks);
+    mapObserver.observe($('#mindmap'));
+  }
+  document.fonts?.ready.then(drawMapLinks);
+}
+async function moveMapNode(id, parent, standalone = false) {
+  if (!editableTeam()) throw Error('他チームは閲覧のみです');
+  if (editing || inlineEdit) throw Error('編集中の内容を保存してください');
+  if (parent) collapsedTopics().delete(parent);
+  await action(standalone ? 'standalone' : 'reparent', { teamId, id, parent });
+}
+function confirmDeleteNode(id) {
+  if (!editableTeam()) return;
+  const node = team().nodes.find((n) => n.id === id);
+  if (!node) return;
+  openDialog(
+    `<h2>この気づきを削除しますか？</h2><p>${esc(node.text)}</p><p class="muted">子の枝は単独の気づきとして残ります。この項目のカード投票とデッキ選択も取り消します。</p><div class="row"><button id="confirm-delete-node" class="danger">削除する</button><button id="cancel-delete-node">キャンセル</button></div>`,
+  );
+  $('#cancel-delete-node').onclick = () => modal.close();
+  $('#confirm-delete-node').onclick = guarded(async () => {
+    await action('deleteNode', { teamId, id });
+    selected = null;
+    modal.close();
+    render();
+  });
+}
+
+function bindStep() {
+  if (tab === 0) bindMap();
   $$('[data-vote]').forEach(
     (b) =>
       (b.onclick = guarded(async () => {
@@ -592,9 +1119,27 @@ function summaryHTML(d) {
     .join('\n')}`;
 }
 async function runAI(task, extra = {}) {
-  if (editing) throw Error('AI処理の前に、入力した内容を保存してください。');
+  if (editing && !(task === 'transcribe' && extra.destination === 'map'))
+    throw Error('AI処理の前に、入力した内容を保存してください。');
   toast('承認済みの接続先で処理しています…');
   const p = await api(`/api/workshops/${ws.id}/ai`, { task, teamId, ...extra });
+  if (task === 'transcribe' && extra.destination === 'map') {
+    const text = p.result.text || p.result.transcript || '';
+    openDialog(
+      `<h2>音声入力を確認</h2><p class="muted">内容を修正して入力欄へ追記してください。マップへの保存は「マップに追加」で行います。</p><textarea id="voice-preview" maxlength="500">${esc(text)}</textarea><button id="use-voice" class="primary">入力欄へ追記</button>`,
+    );
+    $('#use-voice').onclick = guarded(() => {
+      const input = $('#node-text'),
+        value = [input.value, $('#voice-preview').value].filter(Boolean).join('\n');
+      if (value.length > 500) throw Error('合わせて500文字以内にしてください');
+      input.value = value;
+      editing = true;
+      remember();
+      modal.close();
+      input.focus();
+    });
+    return;
+  }
   if (task === 'questions') {
     const questions = Array.isArray(p.result.questions) ? p.result.questions : [];
     openDialog(
@@ -620,23 +1165,37 @@ async function runAI(task, extra = {}) {
 }
 async function recordAudio(destination) {
   if (recording) {
-    recording.recorder.stop();
+    if (recording.recorder.state === 'recording') recording.recorder.stop();
     return;
   }
+  if (recordingStarting) return;
   if (!aiAvailable('transcribe'))
     throw Error('認可済み音声認識が未設定です。キーボードで入力してください。');
-  if (editing) throw Error('録音の前に、入力した内容を保存してください。');
+  if (!editableTeam()) throw Error('このチームは閲覧のみです');
+  if (editing && destination !== 'map') throw Error('録音の前に入力内容を保存してください');
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
     throw Error('このブラウザーでは録音できません。HTTPS環境を確認してください。');
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true }),
-    chunks = [];
-  const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) =>
-    MediaRecorder.isTypeSupported(t),
-  );
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const original = { workshop: ws.id, teamId, tab };
+  recordingStarting = true;
+  remember();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } finally {
+    recordingStarting = false;
+  }
+  if (original.workshop !== ws?.id || original.teamId !== teamId || original.tab !== tab) {
+    stream.getTracks().forEach((t) => t.stop());
+    return;
+  }
+  const chunks = [],
+    mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) =>
+      MediaRecorder.isTypeSupported(t),
+    );
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined),
+    session = { recorder, stream, destination };
   let size = 0;
-  const original = { workshop: ws.id, teamId };
-  recording = { recorder, stream };
+  recording = session;
   recorder.ondataavailable = (e) => {
     chunks.push(e.data);
     size += e.data.size;
@@ -644,16 +1203,13 @@ async function recordAudio(destination) {
   };
   recorder.onstop = async () => {
     stream.getTracks().forEach((t) => t.stop());
-    recording = null;
+    if (recording === session) recording = null;
+    remember();
     render();
-    if (original.workshop !== ws?.id || original.teamId !== teamId) {
-      toast('画面を移動したため録音は送信せず破棄しました');
-      return;
-    }
+    if (original.workshop !== ws?.id || original.teamId !== teamId || original.tab !== tab) return;
     try {
       const blob = new Blob(chunks, { type: recorder.mimeType });
-      if (blob.size > 6 * 1024 * 1024)
-        throw Error('録音が大きすぎます。短く区切って録音してください。');
+      if (blob.size > 6 * 1024 * 1024) throw Error('短く区切って録音してください');
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = '';
       for (let i = 0; i < bytes.length; i += 32768)
@@ -665,18 +1221,17 @@ async function recordAudio(destination) {
   };
   recorder.start(1000);
   render();
-  toast('録音中です。もう一度ボタンを押すと停止して文字起こしします。');
-  if (destination === 'map') $('#map-record').textContent = '■ 録音を停止';
+  toast('録音中です。もう一度マイクボタンを押すと停止します。');
 }
 function stopRecording() {
-  if (recording) {
-    recording.recorder.onstop = () => {
-      recording?.stream.getTracks().forEach((t) => t.stop());
-      recording = null;
-    };
-    recording.recorder.stop();
-  }
+  const session = recording;
+  if (!session) return;
+  recording = null;
+  session.recorder.onstop = () => session.stream.getTracks().forEach((t) => t.stop());
+  if (session.recorder.state === 'recording') session.recorder.stop();
+  session.stream.getTracks().forEach((t) => t.stop());
 }
+
 function updateClocks() {
   if (!ws) return;
   $$('[data-clock]').forEach((el) => {
@@ -726,6 +1281,7 @@ function newWorkshopDialog() {
 }
 async function settings() {
   me = await api('/api/me');
+  const facilitator = await api('/api/facilitator');
   const teams = Object.values(ws?.teams || {}),
     connection = me.notion;
   openDialog(
@@ -742,7 +1298,7 @@ async function settings() {
               '',
             )}</tbody></table><div class="qr-area"><img class="qr" src="/api/workshops/${ws.id}/qr" alt="参加用QRコード"><div><h3>参加用QR</h3><p class="muted">登録済みメール＋メールOTPで参加します。<br>QRだけで権限は付与されません。</p><a href="${esc(location.origin + '/?workshop=' + ws.id)}" target="_blank" rel="noopener">参加ページを開く ↗</a></div></div></section>`
         : ''
-    }<section><h3>Notion連携</h3><p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AI接続とモデル</h3><p class="muted">会社承認済みの接続先はサーバーの許可リストから選択します。認可情報・接続キーは画面から追加できません。</p><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
+    }<section><h3>Notion連携</h3><p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AIファシリテータの動作（Markdown）</h3><p class="muted">このmdをAIの指示として読み込みます。AI未接続時は先頭設定の基本ガイドを使います。JSON設定ブロックを保持してください。</p><form id="facilitator-form"><label for="facilitator-md">ファシリテータ用md</label><textarea id="facilitator-md" class="markdown-editor" spellcheck="false" maxlength="120000">${esc(facilitator.markdown)}</textarea><div class="row"><button class="primary">mdを保存</button><a href="/api/facilitator/export">mdをダウンロード ↓</a></div><p id="facilitator-save-status" role="status"></p></form></section><section><h3>AI接続とモデル</h3><p class="muted">会社承認済みの接続先はサーバーの許可リストから選択します。認可情報・接続キーは画面から追加できません。</p><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
       .filter((p) => p.id !== 'genspark-enterprise')
       .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
       .join(
@@ -830,6 +1386,17 @@ async function settings() {
     if (ws) ws = await api(`/api/workshops/${ws.id}`);
     await refreshSettings('Notionと同期しました');
   });
+  $('#facilitator-form').onsubmit = guarded(async (e) => {
+    e.preventDefault();
+    const saved = await api('/api/facilitator', {
+      markdown: $('#facilitator-md').value,
+      version: facilitator.version,
+    });
+    Object.assign(facilitator, saved);
+    me.facilitator = saved;
+    adviceStates.clear();
+    $('#facilitator-save-status').textContent = 'mdを保存しました。次の助言から反映します。';
+  });
   $('#ai-provider').value = me.ai.provider;
   $('#ai-settings').onsubmit = guarded(async (e) => {
     e.preventDefault();
@@ -868,7 +1435,18 @@ function showPending() {
     };
 }
 async function poll() {
-  if (!me || polling || modal.open || recording) return;
+  if (
+    !sessionEntered ||
+    !me ||
+    inlineEdit ||
+    polling ||
+    modal.open ||
+    recording ||
+    recordingStarting ||
+    mapDragId ||
+    mapConnectId
+  )
+    return;
   polling = true;
   try {
     const [latestMe, latestList] = await Promise.all([api('/api/me'), api('/api/workshops')]);
@@ -921,16 +1499,22 @@ window.addEventListener('beforeunload', () => {
 });
 setInterval(updateClocks, 1000);
 setInterval(poll, 3000);
-const started = performance.now();
-(async () => {
-  try {
-    await enter();
-  } catch {
-    login();
+setInterval(() => {
+  if (sessionEntered && team()) {
+    const s = adviceState();
+    if (s.response && !s.manual && s.expires <= Date.now()) {
+      s.response = null;
+      refreshAdvice();
+    }
+    void requestAdvice('timer_tick');
   }
-  const remaining = Math.max(0, 5000 - (performance.now() - started));
-  setTimeout(() => {
-    $('#splash').remove();
+}, 15000);
+const started = performance.now();
+login();
+setTimeout(
+  () => {
+    $('#splash')?.remove();
     app.hidden = false;
-  }, remaining);
-})();
+  },
+  Math.max(0, 5000 - (performance.now() - started)),
+);

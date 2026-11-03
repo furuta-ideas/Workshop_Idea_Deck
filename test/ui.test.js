@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { webcrypto } from 'node:crypto';
-import { newWorkshop } from '../server/store.js';
+import { newWorkshop, newTeam } from '../server/store.js';
 import { view } from '../server/domain.js';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -16,6 +16,9 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
     team = Object.values(ws.teams)[0];
   ws.members[admin.email].role = role;
   team.nodes.push({ id: 'node-1', text: '地域のつながり', group: 0, parent: null });
+  const other = newTeam('B班');
+  other.nodes.push({ id: 'other-1', text: '他チームの気づき', group: 0, parent: null });
+  ws.teams[other.id] = other;
   const dom = new JSDOM(html, {
     url: 'http://localhost:4317',
     runScripts: 'outside-only',
@@ -56,6 +59,13 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         ai: { provider: 'genspark-enterprise', model: '', imagePrompt: '', approved: [] },
         notion: state.notion,
       };
+    else if (path === '/api/facilitator')
+      data = {
+        markdown: readFileSync(new URL('../config/ai-facilitator.md', import.meta.url), 'utf8'),
+        version: 'test',
+        policy: {},
+      };
+    else if (path.endsWith('/advice')) data = { should_speak: false };
     else if (path === '/api/workshops')
       data = state.available ? [{ id: ws.id, name: ws.name, status: ws.status }] : [];
     else if (path === `/api/workshops/${ws.id}`) data = view(ws, { ...admin, admin: state.admin });
@@ -65,9 +75,22 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         team.nodes.push({
           id: 'node-2',
           text: body.payload.text,
-          parent: body.payload.parent,
+          parent: null,
           group: body.payload.group,
         });
+      if (body.action === 'createTopic') {
+        const p = body.payload,
+          anchor = team.nodes.find((n) => n.id === p.anchorId);
+        team.nodes.push({
+          id: 'topic-' + team.nodes.length,
+          text: p.text,
+          group: 0,
+          parent:
+            p.anchorId === 'theme' ? 'theme' : p.placement === 'child' ? anchor.id : anchor.parent,
+        });
+      }
+      if (body.action === 'reparent')
+        team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
       if (body.action === 'discussion') Object.assign(team.discussion, body.payload);
       if (body.action === 'timer') ws.timers[body.payload.phase] = { endsAt: Date.now() + 180000 };
       ws.revision++;
@@ -77,6 +100,10 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
   };
   window.eval(script);
   await settle();
+  if (!viewState.landing) {
+    window.document.querySelector('#login-entry').click();
+    await settle();
+  }
   return { dom, window, doc: window.document, calls, errors, ws, team, state };
 }
 const settle = () => new Promise((r) => setTimeout(r, 40));
@@ -115,7 +142,10 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
   f.window.document.querySelector('#modal-close').click();
   click(f, '[data-tab="3"]');
   assert.match(f.doc.querySelector('#step-content').textContent, /チームのアイディア/);
-  assert.equal(f.errors.length, 0);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
 });
 test('DOM: 閲覧者に設定歯車を表示せず、編集や音声認識も無効', async (t) => {
   const f = await setup(t, '閲覧者');
@@ -124,7 +154,10 @@ test('DOM: 閲覧者に設定歯車を表示せず、編集や音声認識も無
   assert.ok(f.doc.querySelector('#map-record').disabled);
   assert.match(f.doc.querySelector('.notice').textContent, /閲覧モード/);
   assert.equal(f.calls.filter((c) => c.path.includes('/ai')).length, 0);
-  assert.equal(f.errors.length, 0);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
 });
 test('DOM: 管理者設定の各フォームとQR・AI未設定状態', async (t) => {
   const f = await setup(t);
@@ -142,7 +175,10 @@ test('DOM: 管理者設定の各フォームとQR・AI未設定状態', async (t
   assert.ok(f.doc.querySelector('#notion-sync').disabled);
   assert.equal(f.doc.querySelector('#ai-model').value, '');
   assert.equal(f.doc.querySelector('#ai-prompt').value, '');
-  assert.equal(f.errors.length, 0);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
 });
 
 test('DOM: 体験モードはメール認証フォームを隠し、参加ボタンを案内する', async (t) => {
@@ -173,5 +209,122 @@ test('DOM: Notion未接続と同期失敗を明示し、同期後は空一覧と
   assert.ok(f.doc.querySelector('#settings'));
   assert.ok(f.doc.querySelector('.map-root'));
   assert.equal(f.doc.querySelectorAll('#workshop-select option').length, 1);
-  assert.equal(f.errors.length, 0);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 保存済みセッションもログイン入口を表示し、操作後にワークショップへ進む', async (t) => {
+  const f = await setup(t, '管理者', undefined, { landing: true });
+  assert.ok(f.doc.querySelector('#login-entry'));
+  assert.equal(
+    f.calls.some((c) => c.path === '/api/me'),
+    false,
+  );
+  click(f, '#login-entry');
+  await settle();
+  assert.equal(f.doc.querySelectorAll('[data-tab]').length, 4);
+});
+
+test('DOM: 他チームを表示できるが管理者でも編集・AI送信できない', async (t) => {
+  const f = await setup(t),
+    buttons = f.doc.querySelectorAll('[data-team]');
+  buttons[1].click();
+  await settle();
+  assert.match(f.doc.querySelector('#step-content').textContent, /他チームの気づき/);
+  assert.ok(f.doc.querySelector('#node-text').disabled);
+  assert.ok(f.doc.querySelector('#map-record').disabled);
+  assert.ok(f.doc.querySelector('#next-advice').disabled);
+  assert.equal(f.doc.querySelector('.page-top'), null);
+  assert.equal(f.doc.querySelector('#node-parent'), null);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: ダブルクリックで直接編集、Enterで同階層、Insertで子、折り畳みで件数表示', async (t) => {
+  const f = await setup(t);
+  let button = f.doc.querySelector('[data-node]');
+  button.click();
+  button.dispatchEvent(new f.window.MouseEvent('dblclick', { bubbles: true }));
+  let editor = f.doc.querySelector('#topic-editor');
+  assert.ok(editor);
+  editor.value = '変更した気づき';
+  editor.dispatchEvent(new f.window.Event('input'));
+  editor.dispatchEvent(
+    new f.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+  );
+  await settle();
+  assert.ok(f.doc.querySelector('#topic-editor'));
+  editor = f.doc.querySelector('#topic-editor');
+  editor.value = '同じ階層';
+  editor.dispatchEvent(new f.window.Event('input'));
+  editor.dispatchEvent(
+    new f.window.KeyboardEvent('keydown', { key: 'Insert', bubbles: true, cancelable: true }),
+  );
+  await settle();
+  editor = f.doc.querySelector('#topic-editor');
+  editor.value = '子の項目';
+  editor.dispatchEvent(new f.window.Event('input'));
+  editor.dispatchEvent(new f.window.FocusEvent('blur'));
+  await settle();
+  const operations = f.calls.filter((c) => c.path.endsWith('/action'));
+  assert.equal(operations[0].body.action, 'node');
+  assert.equal(operations[1].body.payload.placement, 'sibling');
+  assert.equal(operations[2].body.payload.placement, 'child');
+  const toggle = f.doc.querySelector('[data-collapse]');
+  assert.ok(toggle);
+  toggle.click();
+  assert.match(f.doc.querySelector('[data-collapse]').textContent, /1/);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 未接続マイクは録音許可やAI送信を行わず、入力中の文字を保持する', async (t) => {
+  const f = await setup(t);
+  const input = f.doc.querySelector('#node-text');
+  input.value = '途中のメモ';
+  input.dispatchEvent(new f.window.Event('input'));
+  click(f, '#map-record');
+  await settle();
+  assert.equal(f.doc.querySelector('#node-text').value, '途中のメモ');
+  assert.match(f.doc.querySelector('#toast').textContent, /未設定/);
+  assert.equal(
+    f.calls.some((c) => c.path.endsWith('/ai')),
+    false,
+  );
+});
+
+test('DOM: ドラッグで接続し、折り畳みはデータを書き換えず展開できる', async (t) => {
+  const f = await setup(t),
+    node = f.doc.querySelector('[data-node]'),
+    root = f.doc.querySelector('.map-root');
+  const values = new Map(),
+    transfer = { setData: (k, v) => values.set(k, v), getData: (k) => values.get(k) };
+  const dispatch = (target, type) => {
+    const e = new f.window.Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: transfer });
+    target.dispatchEvent(e);
+  };
+  dispatch(node, 'dragstart');
+  dispatch(root, 'dragover');
+  dispatch(root, 'drop');
+  await settle();
+  assert.equal(f.team.nodes[0].parent, 'theme');
+  assert.ok(f.doc.querySelector('#map-links path'));
+  const before = f.calls.filter((c) => c.path.endsWith('/action')).length;
+  click(f, '[data-collapse="theme"]');
+  assert.equal(f.doc.querySelectorAll('[data-node]').length, 0);
+  assert.equal(f.doc.querySelector('[data-collapse="theme"]').textContent, '1');
+  click(f, '[data-collapse="theme"]');
+  assert.equal(f.doc.querySelectorAll('[data-node]').length, 1);
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, before);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
 });

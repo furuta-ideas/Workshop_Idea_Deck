@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, configuration } from '../server/index.js';
-import { id, newWorkshop, passwordHash } from '../server/store.js';
+import { id, newWorkshop, newTeam, passwordHash } from '../server/store.js';
 import { testPNG } from '../test-support/fixtures.js';
 
 async function setup(t) {
@@ -54,6 +54,116 @@ async function setup(t) {
   };
   return { app, req, login, codes };
 }
+
+test('HTTP: mdは管理者だけ編集可能。全チーム閲覧と越境変更・AIの拒否、分類確認と取り消し', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test');
+  const ws = newWorkshop('マップ権限テスト', 'admin@example.test'),
+    team = Object.values(ws.teams)[0],
+    other = newTeam('B班');
+  other.nodes = [{ id: 'b1', text: 'B班の気づき', parent: null, group: 1 }];
+  ws.teams[other.id] = other;
+  team.nodes = [{ id: 'a1', text: 'A班の気づき', parent: null, group: 2 }];
+  ws.members['editor@example.test'] = { role: '編集者', teamId: team.id };
+  f.app.store.put('workshops', ws.id, ws);
+  f.app.store.put('users', 'editor@example.test', {
+    id: id(),
+    email: 'editor@example.test',
+    passkeys: [],
+  });
+  const editor = await f.login('editor@example.test');
+  const settings = await f.req('/api/facilitator', undefined, admin);
+  assert.equal(settings.status, 200);
+  assert.ok(settings.body.markdown.includes('facilitator-config'));
+  assert.equal((await f.req('/api/facilitator', undefined, editor)).status, 403);
+  assert.equal(
+    (
+      await f.req(
+        '/api/facilitator',
+        { version: settings.body.version, markdown: settings.body.markdown },
+        editor,
+      )
+    ).status,
+    403,
+  );
+  const changed = await f.req(
+    '/api/facilitator',
+    { version: settings.body.version, markdown: settings.body.markdown + '\nテスト追記' },
+    admin,
+  );
+  assert.equal(changed.status, 200);
+  assert.equal(
+    (
+      await f.req(
+        '/api/facilitator',
+        { version: settings.body.version, markdown: settings.body.markdown },
+        admin,
+      )
+    ).status,
+    409,
+  );
+  assert.equal((await f.req('/api/facilitator/export', undefined, admin)).status, 200);
+  const read = await f.req(`/api/workshops/${ws.id}`, undefined, editor);
+  assert.equal(read.body.teams[other.id].nodes[0].text, 'B班の気づき');
+  for (const session of [admin, editor]) {
+    assert.equal(
+      (
+        await f.req(
+          `/api/workshops/${ws.id}/action`,
+          {
+            action: 'node',
+            payload: { teamId: other.id, text: '越境' },
+            revision: ws.revision,
+            requestId: id(),
+          },
+          session,
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await f.req(
+          `/api/workshops/${ws.id}/advice`,
+          { teamId: other.id, phase: 'ideation', event: 'help_requested' },
+          session,
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await f.req(`/api/workshops/${ws.id}/ai`, { teamId: other.id, task: 'questions' }, session))
+        .status,
+      403,
+    );
+  }
+  const proposal = id();
+  f.app.store.put('challenges', proposal, {
+    type: 'ai',
+    email: 'admin@example.test',
+    wsId: ws.id,
+    teamId: team.id,
+    revision: ws.revision,
+    task: 'classify',
+    result: { groups: [{ nodeIds: ['a1'] }] },
+    expires: Date.now() + 60000,
+  });
+  assert.equal(f.app.store.get('workshops', ws.id).teams[team.id].nodes[0].group, 2);
+  const applied = await f.req(`/api/workshops/${ws.id}/apply`, { proposal }, admin);
+  assert.equal(applied.status, 200);
+  assert.equal(applied.body.teams[team.id].nodes[0].group, 0);
+  const undo = await f.req(
+    `/api/workshops/${ws.id}/action`,
+    {
+      action: 'undoClassification',
+      payload: { teamId: team.id },
+      revision: applied.body.revision,
+      requestId: id(),
+    },
+    admin,
+  );
+  assert.equal(undo.body.teams[team.id].nodes[0].group, 2);
+});
 test('HTTP: OTPの消費・未認証・CSRF・Origin・偽パスキー・本番体験モード拒否', async (t) => {
   const f = await setup(t);
   assert.equal((await f.req('/api/workshops')).status, 401);

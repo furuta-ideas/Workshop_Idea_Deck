@@ -71,3 +71,27 @@ HTTP 2xx、JSON、12MB未満。以下の形式を返してください。
 SQLiteのauditには開始・成功／失敗、requestId、task、provider、model（未指定null）、時刻、利用者IDのハッシュを保存します。本文、音声、キーをログに出しません。提案は10分で失効します。送信する入力内容の認可をGateway側でも検証し、下流の処理ログをこのrequestIdで照合できるようにします。
 
 実装テストでは注入したテスト専用transportを使います。これを本番のAI接続として使用する分岐はありません。
+
+## mdファシリテータの構造化応答（v0.4）
+
+`task: "questions"`で、`input.mode: "facilitation"`の場合は通常のquestions配列ではなく構造化JSONを返します。`input.systemInstructions`には管理者が保存したmd全体、`input.responseSchema`には期待するJSONスキーマを渡します。GatewayはsystemInstructionsを上位のモデル指示として適用し、カード本文や議論を利用者コンテンツとして扱ってください。
+
+入力は現在のphase（ideation／selection／visualization／voting）、event、テーマ、カード（id／text／cluster_id）、選択カード、議論、直近の助言ID、UI状態、介入制限です。メールのメンバー一覧・個人別票・合計票を送信しません。
+
+```json
+{
+  "should_speak": true,
+  "message_id": "ideation-perspective-unique-id",
+  "phase": "ideation",
+  "message_type": "perspective_shift",
+  "robot_animation": "insight",
+  "bubble_text": "別の場面では、誰が同じ困りごとを感じていそうですか？",
+  "duration_ms": 10000,
+  "reason_code": "NEW_PERSPECTIVE",
+  "suggested_clusters": []
+}
+```
+
+話さない場合は`should_speak:false`。本文は120文字以内、duration_msは6000〜12000。状態・メッセージ種類等の許可値は`server/facilitator.js`のスキーマを参照します。分類の提案は`{name,nodeIds,reason}`の配列で最大8群。存在しないID・重複IDを拒否し、提案だけでは共有データを変更しません。
+
+Gateway未設定の場合は外部送信せず、mdに定義した基本ガイドを明示表示します。承認済みGatewayが失敗した場合に基本ガイドへ応答を偽装して切り替えたり、別AIへ再送したりしません。

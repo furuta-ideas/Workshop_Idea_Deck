@@ -61,14 +61,10 @@ export function access(store, ws, user, write = false, now = Date.now()) {
   }
   return member;
 }
-export function teamFor(ws, user, teamId) {
+export function teamFor(ws, user, teamId, write = true) {
   const team = ws.teams[teamId];
   requireThat(team, 'チームがありません', 404);
-  requireThat(
-    user.admin || ws.members[user.email]?.teamId === teamId,
-    '他チームは変更できません',
-    403,
-  );
+  requireThat(!write || ws.members[user.email]?.teamId === teamId, '他チームは変更できません', 403);
   return team;
 }
 export const totals = (ws, phase) =>
@@ -87,26 +83,22 @@ export function view(ws, user) {
   );
   result.role = user.admin ? '管理者' : ws.members[user.email]?.role;
   result.myTeam = ws.members[user.email]?.teamId;
-  if (!user.admin) {
-    for (const [teamId, team] of Object.entries(result.teams)) {
-      if (teamId !== result.myTeam) {
-        team.nodes = [];
-        team.deck = [];
-        team.discussion = {
-          running: false,
-          transcript: '',
-          what: team.discussion.what,
-          who: team.discussion.who,
-          how: team.discussion.how,
-          points: team.discussion.points,
-          keywords: team.discussion.keywords,
-          rounds: [],
-        };
-      }
-    }
-  }
   if (user.admin) result.members = ws.members;
   return result;
+}
+function parentFor(team, node, requested) {
+  requireThat(
+    requested === null || requested === 'theme' || team.nodes.some((n) => n.id === requested),
+    '接続先の項目がありません',
+  );
+  let cursor = requested;
+  const seen = new Set([node.id]);
+  while (cursor && cursor !== 'theme') {
+    requireThat(!seen.has(cursor), '循環する親子関係は作れません');
+    seen.add(cursor);
+    cursor = team.nodes.find((n) => n.id === cursor)?.parent;
+  }
+  return requested;
 }
 export function createWorkshop(store, user, body) {
   requireThat(user.admin, '管理者のみ操作できます', 403);
@@ -162,25 +154,89 @@ export function mutate(store, user, wsId, body) {
       let node = team.nodes.find((n) => n.id === p.id);
       if (!node) {
         requireThat(team.nodes.length < 500, '項目は500件以内です');
+        requireThat(
+          p.parent === undefined || p.parent === null,
+          '新しい気づきは単独で追加してください',
+        );
         node = { id: id(), parent: null, group: 0 };
         team.nodes.push(node);
       }
       node.text = text(p.text, 500);
       requireThat(node.text, '言葉を入力してください');
       if (p.parent !== undefined) {
-        requireThat(!p.parent || team.nodes.some((n) => n.id === p.parent), '親項目がありません');
-        let cursor = p.parent;
-        const seen = new Set([node.id]);
-        while (cursor) {
-          requireThat(!seen.has(cursor), '循環する親子関係は作れません');
-          seen.add(cursor);
-          cursor = team.nodes.find((n) => n.id === cursor)?.parent;
-        }
-        node.parent = p.parent || null;
+        node.parent = parentFor(team, node, p.parent);
       }
       if (p.group !== undefined) {
         requireThat(Number.isInteger(p.group) && p.group >= 0 && p.group < 8, '色が不正です');
         node.group = p.group;
+      }
+    } else if (body.action === 'createTopic') {
+      const team = teamFor(ws, user, p.teamId);
+      requireThat(team.nodes.length < 500, '項目は500件以内です');
+      const words = text(p.text, 500);
+      requireThat(words, 'トピックを入力してください');
+      requireThat(
+        ['floating', 'sibling', 'child', 'main'].includes(p.placement),
+        '追加位置が不正です',
+      );
+      const anchor = team.nodes.find((n) => n.id === p.anchorId);
+      if (['sibling', 'child'].includes(p.placement))
+        requireThat(anchor || p.anchorId === 'theme', '追加元のトピックがありません');
+      const parent =
+        p.placement === 'floating'
+          ? null
+          : p.placement === 'main' || p.anchorId === 'theme'
+            ? 'theme'
+            : p.placement === 'child'
+              ? anchor.id
+              : anchor.parent;
+      const node = { id: id(), text: words, parent, group: anchor?.group || 0 };
+      let at = team.nodes.length;
+      if (anchor) {
+        const descendants = new Set([anchor.id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const n of team.nodes)
+            if (descendants.has(n.parent) && !descendants.has(n.id)) {
+              descendants.add(n.id);
+              changed = true;
+            }
+        }
+        at = Math.max(...team.nodes.map((n, i) => (descendants.has(n.id) ? i : -1))) + 1;
+      }
+      team.nodes.splice(at, 0, node);
+    } else if (body.action === 'topicTheme') {
+      const team = teamFor(ws, user, p.teamId);
+      team.rootText = text(p.text, 500);
+      requireThat(team.rootText, '中心トピックを入力してください');
+    } else if (body.action === 'undoClassification') {
+      const team = teamFor(ws, user, p.teamId),
+        backup = team.lastGrouping;
+      requireThat(backup, '元に戻せる分類がありません');
+      requireThat(
+        backup.applied.every((item) => {
+          const n = team.nodes.find((n) => n.id === item.id);
+          return !n || n.group === item.group;
+        }),
+        '分類後に変更があります。上書きを避けるため元に戻せません',
+        409,
+      );
+      for (const item of backup.before) {
+        const node = team.nodes.find((n) => n.id === item.id);
+        if (node) node.group = item.group;
+      }
+      delete team.lastGrouping;
+    } else if (body.action === 'reparent' || body.action === 'standalone') {
+      const team = teamFor(ws, user, p.teamId);
+      const node = team.nodes.find((n) => n.id === p.id);
+      requireThat(node, '項目がありません', 404);
+      node.parent = parentFor(team, node, body.action === 'standalone' ? null : p.parent);
+      if (body.action === 'standalone')
+        for (const child of team.nodes) if (child.parent === node.id) child.parent = null;
+      if (node.parent === null) {
+        team.nodes = team.nodes.filter((n) => n.id !== node.id);
+        team.nodes.push(node);
       }
     } else if (body.action === 'deleteNode') {
       const team = teamFor(ws, user, p.teamId);

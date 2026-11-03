@@ -175,8 +175,12 @@ test('議論の再開と履歴、文字数制約、個人別投票の非公開',
   ];
   ws.teams[f.other.id].discussion.transcript = '他チームの生の議論';
   const isolated = view(ws, f.editor);
-  assert.deepEqual(isolated.teams[f.other.id].nodes, []);
-  assert.equal(isolated.teams[f.other.id].discussion.transcript, '');
+  assert.equal(isolated.teams[f.other.id].nodes[0].text, '他チームの下書き');
+  assert.equal(isolated.teams[f.other.id].discussion.transcript, '他チームの生の議論');
+  assert.throws(
+    () => f.act(f.admin, 'node', { teamId: f.other.id, text: '越境' }),
+    (e) => e.status === 403,
+  );
 });
 test('自チーム画像へ複数投票でき、参加者取り消しにも予算を適用', (t) => {
   const f = setup(t),
@@ -189,4 +193,62 @@ test('自チーム画像へ複数投票でき、参加者取り消しにも予�
   assert.throws(() => f.act(f.editor, 'vote', { phase: 'ideas', target: f.team.id, delta: 1 }));
   f.act(f.editor, 'vote', { phase: 'ideas', target: f.team.id, delta: -1 });
   assert.equal(totals(f.store.get('workshops', ws.id), 'ideas')[f.team.id], 9);
+});
+
+test('マップ: 通常追加は末尾に単独、Enter同階層・Insert子、枝移動・単独化・削除・循環拒否', (t) => {
+  const f = setup(t),
+    tId = f.team.id;
+  let result = f.act(f.editor, 'node', { teamId: tId, text: '新しい単独' }),
+    nodes = result.teams[tId].nodes;
+  const floating = nodes.at(-1);
+  assert.equal(floating.parent, null);
+  f.act(f.editor, 'reparent', { teamId: tId, id: floating.id, parent: 'theme' });
+  result = f.act(f.editor, 'createTopic', {
+    teamId: tId,
+    text: '子トピック',
+    anchorId: floating.id,
+    placement: 'child',
+  });
+  const child = result.teams[tId].nodes.find((n) => n.text === '子トピック');
+  assert.equal(child.parent, floating.id);
+  result = f.act(f.editor, 'createTopic', {
+    teamId: tId,
+    text: '同じ階層',
+    anchorId: child.id,
+    placement: 'sibling',
+  });
+  const sibling = result.teams[tId].nodes.find((n) => n.text === '同じ階層');
+  assert.equal(sibling.parent, floating.id);
+  assert.throws(
+    () => f.act(f.editor, 'reparent', { teamId: tId, id: floating.id, parent: child.id }),
+    (e) => e.status === 400,
+  );
+  result = f.act(f.editor, 'reparent', { teamId: tId, id: floating.id, parent: null });
+  assert.equal(result.teams[tId].nodes.find((n) => n.id === child.id).parent, floating.id);
+  result = f.act(f.editor, 'standalone', { teamId: tId, id: floating.id });
+  assert.equal(result.teams[tId].nodes.find((n) => n.id === child.id).parent, null);
+  f.act(f.editor, 'reparent', { teamId: tId, id: child.id, parent: floating.id });
+  result = f.act(f.editor, 'deleteNode', { teamId: tId, id: floating.id });
+  assert.equal(result.teams[tId].nodes.find((n) => n.id === child.id).parent, null);
+  assert.ok(!result.teams[tId].nodes.some((n) => n.id === floating.id));
+  result = f.act(f.editor, 'topicTheme', { teamId: tId, text: 'チームの中心' });
+  assert.equal(result.teams[tId].rootText, 'チームの中心');
+  assert.equal(result.theme, f.ws.theme);
+});
+
+test('既存マップ移行は中心への接続・文字を保存し、一度だけ実行される', (t) => {
+  const f = setup(t),
+    old = f.store.get('workshops', f.ws.id);
+  delete old.teams[f.team.id].mapVersion;
+  f.store.put('workshops', old.id, old);
+  f.store.migrateMaps();
+  const after = f.store.get('workshops', old.id);
+  assert.equal(after.revision, old.revision + 1);
+  assert.deepEqual(
+    after.teams[f.team.id].nodes.map((n) => n.text),
+    f.team.nodes.map((n) => n.text),
+  );
+  assert.ok(after.teams[f.team.id].nodes.every((n) => n.parent === 'theme'));
+  f.store.migrateMaps();
+  assert.equal(f.store.get('workshops', old.id).revision, after.revision);
 });

@@ -9,6 +9,7 @@ import { Auth, rateLimit } from './auth.js';
 import { AI } from './ai.js';
 import { Notion } from './notion.js';
 import { validatePNG } from './png.js';
+import { Facilitator } from './facilitator.js';
 import {
   Fault,
   requireThat,
@@ -64,6 +65,7 @@ export function createApp(config = configuration(), overrides = {}) {
   const auth = new Auth(store, config, overrides.sendOtp),
     ai = new AI(store, config, overrides.aiTransport),
     notion = new Notion(store, config, overrides.notionTransport);
+  const facilitator = new Facilitator(store, config, ai);
   if (config.adminEmail && !store.get('users', config.adminEmail))
     store.put('users', config.adminEmail, {
       id: id(),
@@ -141,18 +143,22 @@ export function createApp(config = configuration(), overrides = {}) {
           '/style.css': 'public/style.css',
           '/WorkShop_Top.png': 'public/WorkShop_Top.png',
           '/webauthn.js': 'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js',
+          '/fonts/BIZUDPGothic-Regular.ttf': 'public/fonts/BIZUDPGothic-Regular.ttf',
+          '/fonts/BIZUDPGothic-Bold.ttf': 'public/fonts/BIZUDPGothic-Bold.ttf',
         };
         const file = assets[path];
         requireThat(file && existsSync(join(root, file)), 'ファイルがありません', 404);
         res.setHeader(
           'Content-Type',
-          file.endsWith('.html')
-            ? 'text/html; charset=utf-8'
-            : file.endsWith('.css')
-              ? 'text/css; charset=utf-8'
-              : file.endsWith('.png')
-                ? 'image/png'
-                : 'text/javascript; charset=utf-8',
+          file.endsWith('.ttf')
+            ? 'font/ttf'
+            : file.endsWith('.html')
+              ? 'text/html; charset=utf-8'
+              : file.endsWith('.css')
+                ? 'text/css; charset=utf-8'
+                : file.endsWith('.png')
+                  ? 'image/png'
+                  : 'text/javascript; charset=utf-8',
         );
         res.end(readFileSync(join(root, file)));
         return;
@@ -234,6 +240,7 @@ export function createApp(config = configuration(), overrides = {}) {
           demo: config.demo,
           auth: { emailOtpReady: auth.emailOtpReady() },
           ai: ai.publicSettings(),
+          facilitator: facilitator.settings(),
           notion: user.admin ? notion.status() : notion.connectionState(),
         });
         return;
@@ -260,6 +267,21 @@ export function createApp(config = configuration(), overrides = {}) {
       if (path === '/api/ai/settings' && req.method === 'POST') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
         json(res, ai.save(body));
+        return;
+      }
+      if (path === '/api/facilitator') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        json(
+          res,
+          req.method === 'POST' ? facilitator.save(body, user.email) : facilitator.settings(true),
+        );
+        return;
+      }
+      if (path === '/api/facilitator/export' && req.method === 'GET') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="ai-facilitator.md"');
+        res.end(facilitator.document());
         return;
       }
       if (path === '/api/notion/sync' && req.method === 'POST') {
@@ -302,6 +324,16 @@ export function createApp(config = configuration(), overrides = {}) {
       access(store, ws, user);
       if (!route && req.method === 'GET') {
         json(res, view(ws, user));
+        return;
+      }
+      if (route === 'advice' && req.method === 'POST') {
+        available();
+        rateLimit(store, `facilitation:${user.email}`, 40, 600000);
+        json(res, await facilitator.advise(ws, user, body));
+        return;
+      }
+      if (route === 'advice-feedback' && req.method === 'POST') {
+        json(res, facilitator.feedback(ws, user, body));
         return;
       }
       if (route === 'action' && req.method === 'POST') {
@@ -384,7 +416,7 @@ export function createApp(config = configuration(), overrides = {}) {
           '完了後に管理者がエクスポートできます',
           403,
         );
-        const team = teamFor(ws, user, url.searchParams.get('team'));
+        const team = teamFor(ws, user, url.searchParams.get('team'), false);
         const image = url.searchParams.get('format') === 'png';
         if (image) requireThat(team.image, '画像がありません', 404);
         res.setHeader('Content-Type', image ? 'image/png' : 'text/markdown; charset=utf-8');
@@ -402,7 +434,7 @@ export function createApp(config = configuration(), overrides = {}) {
         rateLimit(store, `ai:${user.email}`, 30, 600000);
         const revision = ws.revision;
         let input = {
-          theme: ws.theme,
+          theme: team.rootText || ws.theme,
           nodes: team.nodes,
           deck: team.deck,
           discussion: team.discussion,
@@ -475,6 +507,7 @@ export function createApp(config = configuration(), overrides = {}) {
             if (r[key] !== undefined) team.discussion[key] = text(r[key], max);
         } else if (p.task === 'keywords') team.discussion.keywords = text(r.keywords, 500);
         else if (p.task === 'classify') {
+          const before = team.nodes.map((n) => ({ id: n.id, group: n.group }));
           requireThat(Array.isArray(r.groups) && r.groups.length <= 8, '分類形式が不正です', 502);
           const seen = new Set();
           for (const [i, g] of r.groups.entries()) {
@@ -487,6 +520,10 @@ export function createApp(config = configuration(), overrides = {}) {
               node.group = i;
             }
           }
+          team.lastGrouping = {
+            before,
+            applied: team.nodes.map((n) => ({ id: n.id, group: n.group })),
+          };
         } else throw new Fault(400, '質問は画面で参照し、回答を項目へ追加してください');
         ws.revision++;
         store.put('workshops', ws.id, ws);
@@ -530,6 +567,7 @@ export function createApp(config = configuration(), overrides = {}) {
     auth,
     ai,
     notion,
+    facilitator,
     start: async () => {
       await new Promise((r) => server.listen(config.port, config.host, r));
       maintenance();

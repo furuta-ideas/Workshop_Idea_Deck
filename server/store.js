@@ -34,6 +34,24 @@ export class Store {
       CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS kv(id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time TEXT, kind TEXT, body TEXT);`);
+    this.migrateMaps();
+  }
+  migrateMaps() {
+    this.tx(() => {
+      for (const ws of this.all('workshops')) {
+        let changed = false;
+        for (const team of Object.values(ws.teams)) {
+          if (team.mapVersion === 2) continue;
+          for (const node of team.nodes) if (node.parent === null) node.parent = 'theme';
+          team.mapVersion = 2;
+          changed = true;
+        }
+        if (changed) {
+          ws.revision++;
+          this.put('workshops', ws.id, ws);
+        }
+      }
+    });
   }
   get(table, key) {
     const row = this.db
@@ -91,6 +109,7 @@ export function newTeam(name) {
   return {
     id: id(),
     name,
+    mapVersion: 2,
     nodes: [],
     deck: [],
     discussion: {
