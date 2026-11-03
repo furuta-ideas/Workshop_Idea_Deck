@@ -102,6 +102,8 @@ function writable() {
   return (
     ws?.status === '進行中' &&
     !ws.deleted &&
+    (!ws.createAttempt || ws.notion) &&
+    !ws.notion?.provisioning &&
     ['管理者', '編集者'].includes(ws.role) &&
     ((!ws.notion?.error && !ws.notion?.conflict) || me.admin)
   );
@@ -269,7 +271,7 @@ function render() {
           `<button data-team="${esc(t.id)}" title="${esc(t.name)}・${t.id === ws.myTeam ? '参加中' : '閲覧のみ'}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v${esc(build.version)}</div></aside><main class="main" data-step="${tab}">${ws ? `${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v${esc(build.version)}</div></aside><main class="main" data-step="${tab}">${ws ? `${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}${ws.notion?.provisioning ? '<div class="notice">Notionのワークショップテンプレートを準備しています。完了すると自動でマップを表示します。</div>' : ''}${ws.creationError ? `<div class="warning">${esc(ws.creationError)}</div>` : ''}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
   $('#toggle-sidebar').onclick = guarded(async () => {
     if (inlineEdit && !(await commitInline())) return;
     sidebarCollapsed = !sidebarCollapsed;
@@ -512,7 +514,7 @@ function mapView() {
     return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
   };
   const rootEdit = inlineEdit?.id === 'theme';
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
   <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：削除 · ドラッグ：移動'}</div></div></div>`;
 }
 function topicActionsDialog() {
@@ -864,6 +866,90 @@ function selectTopic(id) {
   const actions = $('#topic-actions');
   if (actions) actions.disabled = !editableTeam() || !selected;
 }
+function outlineText(anchorId = selected || 'theme') {
+  const t = team(),
+    lines = [];
+  const visit = (id, depth) => {
+    const node = t.nodes.find((n) => n.id === id);
+    if (!node) return;
+    lines.push('\t'.repeat(depth) + node.text.replace(/[\r\n\t]+/g, ' '));
+    for (const child of t.nodes.filter((n) => n.parent === id)) visit(child.id, depth + 1);
+  };
+  if (anchorId === 'theme') {
+    lines.push((t.rootText || ws.theme).replace(/[\r\n\t]+/g, ' '));
+    for (const n of t.nodes.filter((n) => n.parent === 'theme' || n.parent === null))
+      visit(n.id, 1);
+  } else visit(anchorId, 0);
+  return lines.join('\r\n');
+}
+async function pasteMapOutline(text, anchorId = selected || 'theme', placement = 'child') {
+  if (!editableTeam()) throw Error('自分のチームの編集可能なマップで貼り付けてください');
+  if (inlineEdit || editing) throw Error('文字の編集を確定してから貼り付けてください');
+  const before = new Set(team().nodes.map((n) => n.id));
+  collapsedTopics().delete(anchorId);
+  await action('pasteOutline', { text, anchorId, placement, teamId });
+  const first = team().nodes.find((n) => !before.has(n.id));
+  if (first) selectTopic(first.id);
+  toast(`${team().nodes.length - before.size}件のトピックを階層ごと貼り付けました`);
+}
+function pasteOutlineDialog() {
+  const anchorId = selected || 'theme';
+  if (!editableTeam() || inlineEdit) return;
+  openDialog(
+    `<h2>トピックを貼り付け</h2><p class="muted">MindManagerでコピーした内容を下に貼り付けてください。TAB・スペースの字下げを階層として取り込みます。</p><form id="paste-outline-form"><label for="paste-outline-text">コピーしたトピック</label><textarea id="paste-outline-text" rows="12" maxlength="512000" spellcheck="false" required></textarea><label for="paste-outline-position">追加する場所</label><select id="paste-outline-position"><option value="child">選択トピックの子として追加</option><option value="sibling">選択トピックと同じ階層に追加</option></select><button class="primary section-actions">階層を保って貼り付ける</button></form>`,
+  );
+  $('#paste-outline-text').focus();
+  $('#paste-outline-form').onsubmit = guarded(async (e) => {
+    e.preventDefault();
+    const button = e.target.querySelector('button');
+    button.disabled = true;
+    try {
+      await pasteMapOutline(
+        $('#paste-outline-text').value,
+        anchorId,
+        $('#paste-outline-position').value,
+      );
+      modal.close();
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+async function copyOutline() {
+  const text = outlineText();
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('選択トピックと子孫をMindManager互換テキストでコピーしました');
+  } catch {
+    openDialog(
+      `<h2>トピックをコピー</h2><p>下の文字をCtrl＋Cでコピーできます。</p><textarea id="copy-outline-text" rows="12" readonly>${esc(text)}</textarea>`,
+    );
+    $('#copy-outline-text').select();
+  }
+}
+const mapClipboardTarget = (event) =>
+  sessionEntered &&
+  me &&
+  ws &&
+  team() &&
+  tab === 0 &&
+  !modal.open &&
+  !inlineEdit &&
+  !editing &&
+  !event.target.closest?.('input,textarea,[contenteditable="true"]');
+document.addEventListener('paste', (event) => {
+  if (!mapClipboardTarget(event) || !editableTeam()) return;
+  const text = event.clipboardData?.getData('text/plain');
+  if (!text?.trim()) return;
+  event.preventDefault();
+  void guarded(() => pasteMapOutline(text))();
+});
+document.addEventListener('copy', (event) => {
+  if (!mapClipboardTarget(event) || document.getSelection()?.toString()) return;
+  if (!event.clipboardData) return;
+  event.clipboardData.setData('text/plain', outlineText());
+  event.preventDefault();
+});
 function beginInline(id, placement) {
   if (!editableTeam() || recording || recordingStarting) return;
   if (inlineEdit) return;
@@ -951,6 +1037,8 @@ async function commitInlineNow() {
 }
 function bindMap() {
   $('#mindmap').style.transform = `scale(${zoom})`;
+  $('#copy-outline').onclick = guarded(copyOutline);
+  $('#paste-outline').onclick = pasteOutlineDialog;
   const zoomTo = (n) => {
     mapFit = false;
     zoom = Math.min(2, Math.max(0.02, n));
@@ -1428,18 +1516,27 @@ function accountDialog() {
 }
 function newWorkshopDialog() {
   openDialog(
-    '<h2>ワークショップを作成</h2><form id="create-workshop"><label for="ws-name">ワークショップ名</label><input id="ws-name" required maxlength="200"><label for="ws-theme">テーマ</label><textarea id="ws-theme" maxlength="500"></textarea><label for="ws-end">終了日（日本時間の23:59まで有効）</label><input id="ws-end" type="date"><p class="muted">まずサーバーへ保存します。作成後、管理者設定からNotionへ接続できます。</p><button class="primary">作成する</button></form>',
+    '<h2>ワークショップを作成</h2><form id="create-workshop"><label for="ws-name">ワークショップ名</label><input id="ws-name" required maxlength="200"><label for="ws-theme">テーマ</label><textarea id="ws-theme" maxlength="500"></textarea><label for="ws-end">終了日（日本時間の23:59まで有効）</label><input id="ws-end" type="date"><p class="muted">Notion接続済みの場合は、ワークショップ一覧へ「ワークショップテンプレート」で自動登録します。</p><button class="primary">作成する</button></form>',
   );
+  const creationRequestId = crypto.randomUUID();
   $('#create-workshop').onsubmit = guarded(async (e) => {
     e.preventDefault();
-    const result = await api('/api/workshops', {
-      name: $('#ws-name').value,
-      theme: $('#ws-theme').value || $('#ws-name').value,
-      endDate: $('#ws-end').value || null,
-    });
-    modal.close();
-    workshops = await api('/api/workshops');
-    await loadWorkshop(result.id);
+    const submit = e.target.querySelector('button');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    try {
+      const result = await api('/api/workshops', {
+        requestId: creationRequestId,
+        name: $('#ws-name').value,
+        theme: $('#ws-theme').value || $('#ws-name').value,
+        endDate: $('#ws-end').value || null,
+      });
+      modal.close();
+      workshops = await api('/api/workshops');
+      await loadWorkshop(result.id);
+    } finally {
+      submit.disabled = false;
+    }
   });
 }
 async function settings() {

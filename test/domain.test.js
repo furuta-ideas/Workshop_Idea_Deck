@@ -50,6 +50,52 @@ test('閲覧者は全てのデータ変更を拒否、他チームの編集も�
     (e) => e.status === 403,
   );
 });
+
+test('マップ貼付け: 枝の後ろへ親子関係・色を一括追加し、同階層追加と再送でも重複しない', (t) => {
+  const f = setup(t),
+    anchor = f.team.nodes[0];
+  const initial = f.store.get('workshops', f.ws.id);
+  initial.teams[f.team.id].nodes[0].group = 4;
+  f.store.put('workshops', initial.id, initial);
+  const payload = {
+    teamId: f.team.id,
+    anchorId: anchor.id,
+    placement: 'child',
+    text: '親\n\t子\n\t\t孫\n別の親',
+  };
+  const requestId = id(),
+    revision = initial.revision;
+  let saved = f.act(f.editor, 'pasteOutline', payload, revision, requestId);
+  const nodes = saved.teams[f.team.id].nodes;
+  assert.deepEqual(
+    nodes.slice(1, 5).map((n) => n.text),
+    ['親', '子', '孫', '別の親'],
+  );
+  assert.deepEqual(
+    nodes.slice(1, 5).map((n) => n.parent),
+    [anchor.id, nodes[1].id, nodes[2].id, anchor.id],
+  );
+  assert.ok(nodes.slice(1, 5).every((n) => n.group === 4));
+  saved = f.act(f.editor, 'pasteOutline', payload, revision, requestId);
+  assert.equal(saved.teams[f.team.id].nodes.length, 11);
+  saved = f.act(f.editor, 'pasteOutline', { ...payload, placement: 'sibling', text: '同階層' });
+  assert.equal(saved.teams[f.team.id].nodes[5].parent, null);
+});
+
+test('マップ貼付け: 不正入力・他班・閲覧者・上限超過を原子的に拒否', (t) => {
+  const f = setup(t),
+    payload = { teamId: f.team.id, anchorId: 'theme', placement: 'child', text: '親\n\t子' };
+  const before = JSON.stringify(f.store.get('workshops', f.ws.id));
+  for (const [user, p] of [
+    [f.viewer, payload],
+    [f.editor, { ...payload, teamId: f.other.id }],
+    [f.editor, { ...payload, text: '親\n' + ' '.repeat(3) + '子\n 孫' }],
+    [f.editor, { ...payload, text: 'a\n'.repeat(500) }],
+    [f.editor, { ...payload, anchorId: 'missing' }],
+  ])
+    assert.throws(() => f.act(user, 'pasteOutline', p));
+  assert.equal(JSON.stringify(f.store.get('workshops', f.ws.id)), before);
+});
 test('完了・破棄・期限は既存ログインにも即時適用、管理者は管理上の閲覧を維持', (t) => {
   const f = setup(t);
   for (const status of ['完了（変更不可）', '破棄（閲覧不可）']) {

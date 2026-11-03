@@ -4,6 +4,9 @@ import { NotionContent, stageTitles } from './notion-content.js';
 
 const rt = (content) => [{ type: 'text', text: { content } }];
 const title = (p) => (p?.title || []).map((x) => x.plain_text || x.text?.content || '').join('');
+const blockTitle = (b) =>
+  (b[b.type]?.rich_text || []).map((x) => x.plain_text ?? x.text?.content ?? '').join('');
+const participantName = (name) => /^参加者一覧(?:\s*[（(]\d+[）)])*$/.test(name || '');
 const visibleState = (w) =>
   JSON.stringify({
     name: w.name,
@@ -14,6 +17,7 @@ const visibleState = (w) =>
     teams: Object.values(w.teams).map((t) => ({ id: t.id, name: t.name })),
     error: w.notion?.error,
     conflict: w.notion?.conflict,
+    provisioning: w.notion?.provisioning,
   });
 export const participantSchema = {
   名前: { title: {} },
@@ -29,6 +33,7 @@ export class Notion {
     this.liveTransport = transport === fetch;
     this.transport = this.liveTransport ? fetch.bind(globalThis) : transport;
     this.running = null;
+    this.provisions = new Map();
     this.content = new NotionContent(this);
     this.lastRequestAt = 0;
   }
@@ -103,7 +108,7 @@ export class Notion {
     if (ws.notion.participantSource) return ws.notion.participantSource;
     const children = await this.list(`blocks/${ws.notion.pageId}/children`);
     const dbs = children.filter(
-      (b) => b.type === 'child_database' && b.child_database.title === '参加者一覧',
+      (b) => b.type === 'child_database' && participantName(b.child_database.title),
     );
     requireThat(dbs.length <= 1, '参加者一覧DBが複数あります。構成を確認してください', 409);
     let db;
@@ -128,6 +133,12 @@ export class Notion {
       '参加者一覧DBのデータソースを一意に特定できません',
       409,
     );
+    if (ws.notion.templateId)
+      requireThat(
+        db.parent?.page_id?.replaceAll('-', '') === ws.notion.pageId.replaceAll('-', ''),
+        'テンプレートの参加者一覧は新しいWS配下の独立DBにしてください',
+        409,
+      );
     ws.notion.participantSource = db.data_sources[0].id;
     this.checkpointNotion(ws, ['participantSource']);
     return ws.notion.participantSource;
@@ -194,42 +205,90 @@ export class Notion {
       ステータス: { status: { name: ws.status } },
     };
   }
-  async publishNew(ws) {
+  async workshopTemplate() {
+    const matches = [];
+    let cursor;
+    do {
+      const query = new URLSearchParams({
+        page_size: '100',
+        ...(cursor ? { start_cursor: cursor } : {}),
+      });
+      const result = await this.call(`data_sources/${this.config.notionSource}/templates?${query}`);
+      matches.push(
+        ...(result.templates || []).filter((t) => t.name.trim() === 'ワークショップテンプレート'),
+      );
+      cursor = result.has_more ? result.next_cursor : null;
+    } while (cursor);
+    requireThat(
+      matches.length === 1,
+      'WS一覧に「ワークショップテンプレート」を1つ用意し、接続へ共有してください',
+      409,
+    );
+    return matches[0];
+  }
+  async publishNew(ws, selectedTemplate) {
     requireThat(
       !ws.createAttempt,
       'Notionページ作成結果が不明です。重複作成を防ぐため手動の照合が必要です',
       409,
     );
+    const template = selectedTemplate || (await this.workshopTemplate());
     ws.createAttempt = true;
     this.store.put('workshops', ws.id, ws);
     const page = await this.call('pages', 'POST', {
       parent: { type: 'data_source_id', data_source_id: this.config.notionSource },
       properties: this.properties(ws),
-      children: [
-        {
-          object: 'block',
-          type: 'paragraph',
-          paragraph: { rich_text: rt(`Workshop Idea Deck ID: ${ws.id}`) },
-        },
-        ...stageTitles.map((name) => ({
-          object: 'block',
-          type: 'heading_2',
-          heading_2: { rich_text: rt(name), color: 'green_background', is_toggleable: false },
-        })),
-      ],
+      template: { type: 'template_id', template_id: template.id, timezone: 'Asia/Tokyo' },
     });
     ws.notion = {
       pageId: page.id,
       baseEdited: page.last_edited_time,
       checkedAt: 0,
       provisioning: true,
+      templateId: template.id,
+      templateStartedAt: Date.now(),
     };
     ws.dirty = false;
     this.store.put('workshops', ws.id, ws);
-    await this.completeProvision(ws);
     return this.store.get('workshops', ws.id);
   }
   async completeProvision(ws) {
+    if (this.provisions.has(ws.id)) return this.provisions.get(ws.id);
+    const work = this.provision(ws);
+    this.provisions.set(ws.id, work);
+    try {
+      return await work;
+    } finally {
+      this.provisions.delete(ws.id);
+    }
+  }
+  async provision(ws) {
+    if (ws.notion.templateId) {
+      const blocks = await this.list(`blocks/${ws.notion.pageId}/children`);
+      const ready =
+        stageTitles.every((_, i) =>
+          blocks.some(
+            (b) => /^heading_/.test(b.type) && blockTitle(b).trim().startsWith('①②③④'[i]),
+          ),
+        ) &&
+        blocks.some((b) => b.type === 'child_database' && participantName(b.child_database.title));
+      if (!ready) {
+        requireThat(
+          Date.now() - ws.notion.templateStartedAt < 600000,
+          'テンプレートの展開が完了しません。①〜④の見出しと参加者一覧DBを確認してください',
+          409,
+        );
+        return false;
+      }
+      for (const b of blocks) {
+        const name = b.type === 'toggle' && /^チーム[：:]\s*(.+)$/.exec(blockTitle(b))?.[1]?.trim();
+        if (name && !Object.values(ws.teams).some((t) => t.name === name)) {
+          const team = newTeam(name);
+          ws.teams[team.id] = team;
+        }
+      }
+      this.store.put('workshops', ws.id, ws);
+    }
     const source = await this.sourceFor(ws, true);
     const existing = await this.list(`data_sources/${source}/query`, 'POST');
     for (const [email, member] of Object.entries(ws.members)) {
@@ -243,8 +302,29 @@ export class Notion {
           },
         });
     }
+    if (ws.notion.templateId) {
+      await this.pullMembers(ws);
+      const page = await this.call(`pages/${ws.notion.pageId}`, 'PATCH', {
+        properties: this.properties(ws),
+      });
+      ws.notion.baseEdited = page.last_edited_time;
+      ws.notion.checkedAt = Date.now();
+      this.store.put('workshops', ws.id, ws);
+      const imported = await this.content.pull(ws, undefined, true);
+      requireThat(
+        imported && !ws.documentSync?.error,
+        ws.documentSync?.error || 'テンプレート本文を読み込めません',
+        409,
+      );
+      ws = this.store.get('workshops', ws.id);
+      for (const team of Object.values(ws.teams)) team.rootText = ws.theme;
+      this.content.schedule(ws);
+    }
     ws.notion.provisioning = false;
+    delete ws.notion.error;
+    ws.revision++;
     this.store.put('workshops', ws.id, ws);
+    return true;
   }
   async sync() {
     if (this.running) return this.running;
@@ -304,7 +384,12 @@ export class Notion {
         }
         let baseline = structuredClone(ws);
         try {
-          if (ws.notion.provisioning) await this.completeProvision(ws);
+          if (ws.notion.provisioning) {
+            if (!(await this.completeProvision(ws))) continue;
+            ws = this.store.get('workshops', ws.id);
+            baseline = structuredClone(ws);
+            Object.assign(page, await this.call(`pages/${ws.notion.pageId}`));
+          }
           await this.pullMembers(ws);
           const meta = this.meta(page);
           if (ws.dirty && ws.notion.baseEdited !== page.last_edited_time) {

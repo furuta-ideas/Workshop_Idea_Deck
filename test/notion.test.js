@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store, newWorkshop } from '../server/store.js';
 import { Notion } from '../server/notion.js';
+import { stageTitles } from '../server/notion-content.js';
 import { access, expire } from '../server/domain.js';
 
 // In-memory contract fixture. No production Notion token, database or network call.
@@ -12,6 +13,8 @@ function fixture(t) {
   const state = {
     calls: [],
     fail: false,
+    failCreate: false,
+    templates: [{ id: 'template-1', name: 'ワークショップテンプレート' }],
     status: '進行中',
     date: null,
     name: 'Notionから追加',
@@ -38,9 +41,11 @@ function fixture(t) {
       gate.enter();
       await gate.wait;
     }
+    if (state.failCreate && path === 'pages') return { ok: false, status: 503 };
     if (state.fail) return { ok: false, status: 503 };
     let data;
-    if (path === 'data_sources/master')
+    if (path === 'data_sources/master/templates') data = { templates: state.templates };
+    else if (path === 'data_sources/master')
       data = {
         properties: {
           名前: { type: 'title' },
@@ -52,11 +57,28 @@ function fixture(t) {
     else if (path === 'blocks/remote-page/children')
       data = {
         results: state.children
-          ? [{ type: 'child_database', id: 'child-db', child_database: { title: '参加者一覧' } }]
+          ? [
+              {
+                type: 'child_database',
+                id: 'child-db',
+                child_database: { title: state.templateApplied ? '参加者一覧 (1) (1)' : '参加者一覧' },
+              },
+              ...(state.templateApplied
+                ? stageTitles.map((s, i) => ({
+                    id: 'stage-' + i,
+                    type: 'heading_2',
+                    heading_2: { rich_text: [{ text: { content: s } }], is_toggleable: false },
+                  }))
+                : []),
+            ]
           : [],
       };
     else if (path === 'databases/child-db')
-      data = { id: 'child-db', data_sources: [{ id: 'participants' }] };
+      data = {
+        id: 'child-db',
+        parent: { page_id: state.childParent || 'remote-page' },
+        data_sources: [{ id: 'participants' }],
+      };
     else if (path === 'data_sources/participants')
       data = {
         properties: Object.fromEntries(
@@ -92,9 +114,11 @@ function fixture(t) {
       path === 'pages' &&
       body.parent.type === 'data_source_id' &&
       body.parent.data_source_id === 'master'
-    )
+    ) {
+      state.templateApplied = true;
+      state.name = body.properties.名前.title[0].text.content;
       data = page();
-    else if (path === 'databases' && init.method === 'POST') {
+    } else if (path === 'databases' && init.method === 'POST') {
       state.children = true;
       data = { id: 'child-db', data_sources: [{ id: 'participants' }] };
     } else if (path === 'pages' && body.parent.data_source_id === 'participants') {
@@ -188,30 +212,123 @@ test('同期失敗は記録して閲覧を止め、回復後は再開。権限�
   assert.equal(ws.notion.error, undefined);
   assert.equal(ws.members['editor@example.test'].role, '閲覧者');
 });
-test('アプリ新規WSはNotionページ配下に子参加者DBを生成し、必要な型を渡す', async (t) => {
+test('アプリ新規WSは指定テンプレートで一覧に作成し、非同期展開までDBを重複作成しない', async (t) => {
   const f = fixture(t),
-    ws = newWorkshop('アプリ新規', 'admin@example.test');
+    ws = newWorkshop('新規テンプレートWS', 'admin@example.test');
   f.state.children = false;
   f.state.members = [];
   f.store.put('workshops', ws.id, ws);
-  await f.notion.publishNew(ws);
-  const create = f.state.calls.find((c) => c.path === 'databases' && c.method === 'POST');
-  assert.equal(create.body.parent.page_id, 'remote-page');
-  assert.equal(create.body.is_inline, true);
-  assert.ok(create.body.initial_data_source.properties.グループ.select);
-  assert.equal(f.store.get('workshops', ws.id).notion.provisioning, false);
+  let created = await f.notion.publishNew(ws);
+  const call = f.state.calls.find((c) => c.path === 'pages');
+  assert.deepEqual(call.body.template, {
+    type: 'template_id',
+    template_id: 'template-1',
+    timezone: 'Asia/Tokyo',
+  });
+  assert.equal(call.body.children, undefined);
+  assert.equal(created.notion.provisioning, true);
+  assert.equal(await f.notion.completeProvision(created), false);
+  assert.equal(
+    f.state.calls.filter((c) => c.path === 'databases' && c.method === 'POST').length,
+    0,
+  );
+  f.state.children = true;
+  await f.notion.sync();
+  created = f.store.get('workshops', ws.id);
+  assert.equal(created.notion.provisioning, false);
+  assert.equal(created.documentSync.queued, true);
   assert.equal(f.state.members[0].role, '管理者');
+  assert.equal(created.name, '新規テンプレートWS');
+  assert.equal(Object.values(created.teams)[0].rootText, '新規テンプレートWS');
+  assert.equal(
+    f.state.calls.filter((c) => c.path === 'pages' && c.body.parent.data_source_id === 'master')
+      .length,
+    1,
+  );
+  assert.equal(
+    f.state.calls.filter((c) => c.path === 'databases' && c.method === 'POST').length,
+    0,
+  );
 });
+
 test('ページ作成結果不明時は自動再送せず、二重作成を防止', async (t) => {
   const f = fixture(t),
     ws = newWorkshop('曖昧な作成', 'admin@example.test');
   f.store.put('workshops', ws.id, ws);
-  f.state.fail = true;
+  f.state.failCreate = true;
   await assert.rejects(() => f.notion.publishNew(ws));
   assert.equal(f.store.get('workshops', ws.id).createAttempt, true);
   const count = f.state.calls.length;
   await assert.rejects(() => f.notion.publishNew(f.store.get('workshops', ws.id)));
   assert.equal(f.state.calls.length, count);
+});
+
+test('Notion: 指定名のテンプレートがない・重複するとページを作成しない', async (t) => {
+  const f = fixture(t),
+    ws = newWorkshop('テンプレート検証', 'admin@example.test');
+  f.store.put('workshops', ws.id, ws);
+  for (const templates of [
+    [],
+    [
+      { id: 'a', name: 'ワークショップテンプレート' },
+      { id: 'b', name: 'ワークショップテンプレート' },
+    ],
+  ]) {
+    f.state.templates = templates;
+    await assert.rejects(() => f.notion.publishNew(ws));
+    assert.equal(
+      f.state.calls.some((c) => c.path === 'pages'),
+      false,
+    );
+    assert.equal(f.store.get('workshops', ws.id).createAttempt, undefined);
+  }
+});
+
+test('Notion: テンプレート元へ繋がる参加者DBは拒否し、元の参加者を書き換えない', async (t) => {
+  const f = fixture(t),
+    ws = newWorkshop('独立DB検証', 'admin@example.test');
+  f.state.childParent = 'template-page';
+  f.store.put('workshops', ws.id, ws);
+  const created = await f.notion.publishNew(ws);
+  await assert.rejects(() => f.notion.completeProvision(created), /独立DB/);
+  assert.equal(
+    f.state.calls.some(
+      (c) => c.path === 'pages' && c.body.parent.data_source_id === 'participants',
+    ),
+    false,
+  );
+  assert.equal(f.store.get('workshops', ws.id).notion.provisioning, true);
+});
+
+test('Notion: テンプレート名の探索はtemplates配列をページ送りし、一致したIDだけ使う', async (t) => {
+  const f = fixture(t),
+    paths = [];
+  f.notion.call = async (path) => {
+    paths.push(path);
+    return paths.length === 1
+      ? {
+          templates: [{ id: 'other', name: '別テンプレート' }],
+          has_more: true,
+          next_cursor: 'cursor',
+        }
+      : { templates: [{ id: 'correct', name: 'ワークショップテンプレート' }], has_more: false };
+  };
+  assert.equal((await f.notion.workshopTemplate()).id, 'correct');
+  assert.match(paths[1], /start_cursor=cursor/);
+});
+
+test('Notion: 旧方式の途中作成は子DBスキーマと作成者の管理者設定を回復する', async (t) => {
+  const f = fixture(t),
+    ws = newWorkshop('旧作成回復', 'admin@example.test');
+  ws.notion = { pageId: 'remote-page', provisioning: true };
+  f.state.children = false;
+  f.state.members = [];
+  f.store.put('workshops', ws.id, ws);
+  await f.notion.completeProvision(ws);
+  const c = f.state.calls.find((c) => c.path === 'databases' && c.method === 'POST');
+  assert.ok(c.body.initial_data_source.properties.グループ.select);
+  assert.equal(f.store.get('workshops', ws.id).notion.provisioning, false);
+  assert.equal(f.state.members[0].role, '管理者');
 });
 
 test('Notion接続状態は未設定・同期待ち・失敗・陳腐化・正常を区別し、公開状態へ詳細を出さない', async (t) => {

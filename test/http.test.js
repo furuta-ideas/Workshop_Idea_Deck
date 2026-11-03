@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createApp, configuration } from '../server/index.js';
 import { id, newWorkshop, newTeam, passwordHash } from '../server/store.js';
 import { testPNG } from '../test-support/fixtures.js';
+import { Fault } from '../server/domain.js';
 
 async function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), 'workshop-http-')),
@@ -55,6 +56,59 @@ async function setup(t) {
   return { app, req, login, codes };
 }
 
+test('HTTP: 新規作成はNotionテンプレートを自動適用し、同じ操作IDで二重登録しない', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test');
+  const n = f.app.notion;
+  n.config.notionToken = 'fixture';
+  n.config.notionSource = 'fixture';
+  let calls = 0;
+  n.workshopTemplate = async () => ({ id: 'template-selected' });
+  n.publishNew = async (ws, template) => {
+    assert.equal(template.id, 'template-selected');
+    calls++;
+    ws.notion = { pageId: 'created-page', provisioning: true, templateId: template.id };
+    f.app.store.put('workshops', ws.id, ws);
+    return ws;
+  };
+  const payload = { name: '自動登録WS', requestId: id() };
+  const created = await f.req('/api/workshops', payload, admin);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.notion.pageId, 'created-page');
+  const retry = await f.req('/api/workshops', payload, admin);
+  assert.equal(retry.body.id, created.body.id);
+  assert.equal(calls, 1);
+  assert.equal(f.app.store.all('workshops').length, 1);
+});
+
+test('HTTP: 作成応答の消失は保存したWSに明示し、テンプレート未取得時は空WSを増やさない', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test'),
+    n = f.app.notion;
+  n.config.notionToken = 'fixture';
+  n.config.notionSource = 'fixture';
+  n.workshopTemplate = async () => {
+    throw new Fault(409, 'テンプレートがありません');
+  };
+  assert.equal((await f.req('/api/workshops', { name: '未作成' }, admin)).status, 409);
+  assert.equal(f.app.store.all('workshops').length, 0);
+  n.workshopTemplate = async () => ({ id: 'template' });
+  let calls = 0;
+  n.publishNew = async (ws) => {
+    calls++;
+    ws.createAttempt = true;
+    f.app.store.put('workshops', ws.id, ws);
+    throw new Fault(502, '作成応答が失われました');
+  };
+  const payload = { name: '結果確認待ち', requestId: id() };
+  const created = await f.req('/api/workshops', payload, admin);
+  assert.equal(created.status, 201);
+  assert.ok(created.body.creationError);
+  assert.equal(created.body.createAttempt, true);
+  await f.req('/api/workshops', payload, admin);
+  assert.equal(calls, 1);
+});
+
 test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちでも連続編集できる', async (t) => {
   const f = await setup(t),
     admin = await f.login('admin@example.test'),
@@ -91,6 +145,20 @@ test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちで�
     200,
   );
   assert.equal(f.app.store.get('workshops', ws.id).revision, revision);
+  assert.equal(externalCalls, 0);
+  const response = await f.req(
+    `/api/workshops/${ws.id}/action`,
+    {
+      action: 'pasteOutline',
+      payload: { teamId: team.id, anchorId: 'theme', placement: 'child', text: '親\n\t子' },
+      revision: current.revision,
+      requestId: id(),
+    },
+    admin,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.body.teams[team.id].nodes.length, 4);
+  assert.equal(response.body.documentSync.generation, 3);
   assert.equal(externalCalls, 0);
 });
 

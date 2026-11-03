@@ -5,6 +5,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { webcrypto } from 'node:crypto';
 import { newWorkshop, newTeam } from '../server/store.js';
 import { view } from '../server/domain.js';
+import { parseOutline } from '../server/outline.js';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -111,6 +112,19 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
             p.anchorId === 'theme' ? 'theme' : p.placement === 'child' ? anchor.id : anchor.parent,
         });
       }
+      if (body.action === 'pasteOutline') {
+        const p = body.payload,
+          outline = parseOutline(p.text),
+          before = team.nodes.length;
+        outline.forEach((n, i) =>
+          team.nodes.push({
+            id: 'pasted-' + (before + i),
+            text: n.text,
+            group: 0,
+            parent: n.parentIndex === null ? p.anchorId : 'pasted-' + (before + n.parentIndex),
+          }),
+        );
+      }
       if (body.action === 'reparent')
         team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
       if (body.action === 'deck') team.deck = [...body.payload.ids];
@@ -136,6 +150,72 @@ const click = (f, selector) => {
   assert.ok(el, selector);
   el.click();
 };
+
+test('DOM: MindManagerの8項目をCtrl+V相当で階層追加し、折り畳んだ枝もTAB形式でコピー', async (t) => {
+  const f = await setup(t);
+  click(f, '[data-node="node-1"]');
+  const text = readFileSync(
+    new URL('../test-support/mindmanager-copy.txt', import.meta.url),
+    'utf8',
+  );
+  const paste = new f.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, 'clipboardData', { value: { getData: () => text } });
+  f.doc.querySelector('[data-node="node-1"]').dispatchEvent(paste);
+  await settle();
+  assert.equal(paste.defaultPrevented, true);
+  assert.equal(f.team.nodes.length, 9);
+  assert.equal(
+    f.calls.filter((c) => c.path.endsWith('/action') && c.body.action === 'pasteOutline').length,
+    1,
+  );
+  assert.equal(f.team.nodes[1].parent, 'node-1');
+  click(f, '#collapse-all');
+  await settle();
+  let copied;
+  const copy = new f.window.Event('copy', { bubbles: true, cancelable: true });
+  Object.defineProperty(copy, 'clipboardData', {
+    value: {
+      setData: (type, value) => {
+        assert.equal(type, 'text/plain');
+        copied = value;
+      },
+    },
+  });
+  f.doc.querySelector('.map-root').dispatchEvent(copy);
+  assert.equal(copy.defaultPrevented, true);
+  assert.deepEqual(parseOutline(copied), parseOutline(text));
+  assert.ok(copied.includes('\r\n\t'));
+});
+
+test('DOM: 貼付けダイアログで階層を選べ、文字入力中・閲覧者にはマップ貼付けを割り込ませない', async (t) => {
+  const f = await setup(t);
+  click(f, '#paste-outline');
+  f.doc.querySelector('#paste-outline-text').value = '親\n\t子';
+  f.doc.querySelector('#paste-outline-position').value = 'sibling';
+  f.doc
+    .querySelector('#paste-outline-form')
+    .dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle();
+  assert.equal(
+    f.calls.find((c) => c.body?.action === 'pasteOutline').body.payload.placement,
+    'sibling',
+  );
+  click(f, '#new-topic');
+  const paste = new f.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, 'clipboardData', { value: { getData: () => '入力の中の文章' } });
+  f.doc.querySelector('#topic-editor').dispatchEvent(paste);
+  assert.equal(paste.defaultPrevented, false);
+  const viewer = await setup(t, '閲覧者');
+  assert.equal(viewer.doc.querySelector('#paste-outline').disabled, true);
+  const denied = new viewer.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(denied, 'clipboardData', { value: { getData: () => '追加しない' } });
+  viewer.doc.querySelector('.map-root').dispatchEvent(denied);
+  await settle();
+  assert.equal(
+    viewer.calls.some((c) => c.body?.action === 'pasteOutline'),
+    false,
+  );
+});
 
 for (const confirm of ['Enter', 'Insert', 'blur', 'Escape']) {
   test(`DOM: 空トピックを${confirm}で取り消した後も選択・直接編集・追加が続けられる`, async (t) => {

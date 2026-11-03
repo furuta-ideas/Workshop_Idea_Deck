@@ -296,8 +296,41 @@ export function createApp(config = configuration(), overrides = {}) {
       }
       if (path === '/api/workshops') {
         if (req.method === 'POST') {
+          requireThat(user.admin, '管理者のみ操作できます', 403);
+          const creationKey =
+            body.requestId && `workshop-create:${hash(user.email)}:${body.requestId}`;
+          if (body.requestId)
+            requireThat(
+              typeof body.requestId === 'string' && /^[a-z0-9-]{1,100}$/i.test(body.requestId),
+              '作成操作IDが不正です',
+            );
+          const saved = creationKey && store.get('kv', creationKey);
+          if (saved) {
+            json(res, view(store.get('workshops', saved.workshopId), user), 201);
+            return;
+          }
           available();
-          json(res, view(createWorkshop(store, user, body), user), 201);
+          let created;
+          if (notion.enabled()) {
+            await remote(async () => {
+              const template = await notion.workshopTemplate();
+              created = createWorkshop(store, user, body);
+              if (creationKey) store.put('kv', creationKey, { workshopId: created.id });
+              try {
+                created = await notion.publishNew(created, template);
+              } catch (e) {
+                created = store.get('workshops', created.id);
+                created.creationError =
+                  'Notionへの登録結果を確認できません。重複作成を避けるため管理者がNotion一覧と照合してください。';
+                store.put('workshops', created.id, created);
+                console.error('Notion workshop creation:', e.message);
+              }
+            });
+          } else {
+            created = createWorkshop(store, user, body);
+            if (creationKey) store.put('kv', creationKey, { workshopId: created.id });
+          }
+          json(res, view(created, user), 201);
           return;
         }
         requireThat(req.method === 'GET', '未対応のメソッドです', 405);

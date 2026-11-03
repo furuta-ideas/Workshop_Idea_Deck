@@ -1,4 +1,5 @@
 import { id, newWorkshop, newTeam, normalizeEmail, passwordHash } from './store.js';
+import { parseOutline } from './outline.js';
 
 export class Fault extends Error {
   constructor(status, message) {
@@ -52,6 +53,12 @@ export function access(store, ws, user, write = false, now = Date.now()) {
     );
   }
   if (write) {
+    requireThat(!ws.createAttempt || ws.notion, 'Notionへの登録結果の確認をお待ちください', 409);
+    requireThat(
+      !ws.notion?.provisioning,
+      'Notionテンプレートを準備しています。少しお待ちください',
+      409,
+    );
     requireThat(
       ws.status === '進行中' && !ws.deleted,
       '進行中のワークショップのみ変更できます',
@@ -209,6 +216,33 @@ export function mutate(store, user, wsId, body) {
         at = Math.max(...team.nodes.map((n, i) => (descendants.has(n.id) ? i : -1))) + 1;
       }
       team.nodes.splice(at, 0, node);
+    } else if (body.action === 'pasteOutline') {
+      const team = teamFor(ws, user, p.teamId);
+      const outline = parseOutline(p.text);
+      requireThat(team.nodes.length + outline.length <= 500, '貼り付け後の項目は500件以内です');
+      requireThat(['child', 'sibling'].includes(p.placement), '貼り付け位置が不正です');
+      const anchor = team.nodes.find((n) => n.id === p.anchorId);
+      requireThat(anchor || p.anchorId === 'theme', '貼り付け先のトピックがありません');
+      const rootParent =
+        p.anchorId === 'theme' ? 'theme' : p.placement === 'child' ? anchor.id : anchor.parent;
+      const inserted = outline.map((n) => ({ id: id(), text: n.text, group: anchor?.group || 0 }));
+      outline.forEach((n, i) => {
+        inserted[i].parent = n.parentIndex === null ? rootParent : inserted[n.parentIndex].id;
+      });
+      const descendants = new Set([p.anchorId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const n of team.nodes)
+          if (descendants.has(n.parent) && !descendants.has(n.id)) {
+            descendants.add(n.id);
+            changed = true;
+          }
+      }
+      const at = anchor
+        ? Math.max(...team.nodes.map((n, i) => (descendants.has(n.id) ? i : -1))) + 1
+        : team.nodes.length;
+      team.nodes.splice(at, 0, ...inserted);
     } else if (body.action === 'topicTheme') {
       const team = teamFor(ws, user, p.teamId);
       team.rootText = text(p.text, 500);

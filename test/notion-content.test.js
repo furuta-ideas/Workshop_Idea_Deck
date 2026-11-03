@@ -4,6 +4,7 @@ import { Store, newWorkshop, newTeam, id } from '../server/store.js';
 import { Notion } from '../server/notion.js';
 import { stageTitles } from '../server/notion-content.js';
 import { totals } from '../server/domain.js';
+import { readFileSync } from 'node:fs';
 const rt = (text) => [{ type: 'text', text: { content: text }, plain_text: text }];
 const text = (b) =>
   (b[b.type]?.rich_text || []).map((x) => x.text?.content || x.plain_text || '').join('');
@@ -186,6 +187,41 @@ function fixture(t, legacy = false) {
   };
   return { store, n, ws, team, other, state, find, load, change };
 }
+test('Notion本文: MindManager貼付けを一括予約し、Notionのトグルと再読込みでも8項目の階層を保持', async (t) => {
+  const f = fixture(t);
+  const original = await f.load();
+  const calls = f.state.calls.length;
+  const copied = readFileSync(
+    new URL('../test-support/mindmanager-copy.txt', import.meta.url),
+    'utf8',
+  );
+  let w = await queue(
+    f,
+    'pasteOutline',
+    { teamId: f.team.id, anchorId: 'main', placement: 'child', text: copied },
+    1000,
+  );
+  assert.equal(f.state.calls.length, calls);
+  assert.equal(w.documentSync.generation, 1);
+  const inserted = w.teams[f.team.id].nodes.filter(
+    (n) => !original.teams[f.team.id].nodes.some((old) => old.id === n.id),
+  );
+  assert.equal(inserted.length, 8);
+  const expected = inserted.map((n) => ({ id: n.id, text: n.text, parent: n.parent }));
+  w = await f.n.content.flushScheduled(w.id, 11001);
+  assert.equal(w.documentSync.error, null);
+  assert.ok(
+    expected.every((n) => w.teams[f.team.id].nodes.find((x) => x.id === n.id).notionBlockId),
+  );
+  w = await f.load();
+  assert.deepEqual(
+    w.teams[f.team.id].nodes
+      .filter((n) => expected.some((x) => x.id === n.id))
+      .map((n) => ({ id: n.id, text: n.text, parent: n.parent })),
+    expected,
+  );
+});
+
 test('Notion本文: 見出し2/3/4/トグル・箇条書きの階層を起動時に取り込み、旧ローカル内容をバックアップ', async (t) => {
   const f = fixture(t, true),
     w = await f.load(),
