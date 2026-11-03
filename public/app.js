@@ -34,6 +34,7 @@ let mapDragId = null,
   mapObserver = null,
   sessionEntered = false;
 const mapCollapsed = new Map();
+let mapFit = false;
 const advicePhases = ['ideation', 'selection', 'visualization', 'voting'];
 const brand = () =>
   '<div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><div class="brand-name">アイディアワークショップ支援ツール</div><div class="brand-sub">SMALL INSIGHTS. NEW POSSIBILITIES.</div></div></div>';
@@ -158,6 +159,7 @@ async function enter() {
   }
 }
 function loginForm() {
+  app.dataset.view = 'login';
   app.innerHTML = `<main class="login"><section class="login-story">${brand()}<div class="eyebrow">IDEA WORKSHOP</div><h1>ひとつの気づきが、<br>次のアイディアに。</h1><p class="lead">言葉にする。選び取る。組み合わせる。<br>一人ひとりの「もやもや」から、<br>チームで新しい可能性を見つけましょう。</p><div class="mini-notes" aria-hidden="true"><span class="g0">小さな<br>気づき</span><span class="g1">まだない<br>つながり</span><span class="g2">新しい<br>アイディア</span></div></section><section class="login-form"><span class="eyebrow">LET’S GET STARTED</span><h2>ワークショップへようこそ</h2><p class="muted">${invitation ? '招待されたワークショップの登録メールで参加してください。' : '登録済みのメールアドレスでログインしてください。'}</p><form id="login-form"><label for="email">メールアドレス</label><input id="email" type="email" autocomplete="username webauthn" placeholder="name@example.com" required maxlength="254"><div id="password-field"${invitation ? ' hidden' : ''}><label for="password">パスワード <span class="muted">設定済みの方</span></label><input id="password" type="password" autocomplete="current-password" maxlength="200"></div><div id="otp-field" hidden><label for="otp">メールに届いた6桁の認証コード</label><input id="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></div><div id="login-error" class="error" role="alert"></div><button class="primary" id="login-submit">認証コードを送信</button></form><button id="passkey-login" class="passkey">⌑ パスキーでログイン</button><div id="demo-area"></div><p class="login-foot">登録のないメールアドレスは利用できません。<br>参加登録や接続についてはファシリテーターへご連絡ください。</p></section></main>`;
   challenge = null;
   $('#login-form').onsubmit = async (e) => {
@@ -224,6 +226,7 @@ function loginForm() {
     .catch(() => {});
 }
 function login() {
+  app.dataset.view = 'login';
   sessionEntered = false;
   ws = null;
   app.innerHTML = `<main class="login-landing"><section class="login-card">${brand()}<div class="login-symbol" aria-hidden="true">✦</div><h1>アイディアワークショップ</h1><span class="security-pill">メールOTP・パスキー対応</span><h2>参加者ログイン</h2><p>登録されたアカウントで本人確認します。</p><button id="login-entry" class="primary">本人確認してログイン</button><p class="muted">小さな気づきから、新しい可能性へ。</p></section></main>`;
@@ -242,6 +245,7 @@ function render() {
     return;
   }
   const t = team();
+  app.dataset.view = 'workspace';
   app.innerHTML = `<header class="topbar">${brand()}<div class="row"><span class="identity">${esc(me.email)}</span><button id="account" class="avatar" aria-label="アカウントとパスワード設定">${me.admin ? 'F' : 'P'}</button><button id="register-key" class="text-button" title="パスキーを登録">⌑ パスキー登録</button>${me.admin ? '<button id="settings" class="icon" aria-label="管理者設定">⚙</button>' : ''}<button id="logout" class="text-button">ログアウト</button></div></header>${me.demo ? '<div class="warning">ローカル体験モード — 体験用データを別フォルダーに保存しています。本番認証・Notion・AI送信は無効です。</div>' : ''}<div class="shell"><aside class="sidebar"><div><label for="workshop-select">WORKSHOP</label><select id="workshop-select" aria-label="ワークショップを選択">${workshops.map((w) => `<option value="${esc(w.id)}"${w.id === ws?.id ? ' selected' : ''}>${esc(w.name)}${w.deleted ? '（削除済み）' : ''}</option>`).join('')}</select>${me.admin ? '<button id="new-workshop" class="text-button new-workshop">＋ ワークショップを作成</button>' : ''}</div><div class="workspace-tag"><span class="eyebrow">TODAY’S THEME</span><br>${esc(ws?.theme || '新しいワークショップを始めましょう')}</div>${sidebarStatus()}<div><label>TEAMS</label><div class="team-switch">${
     Object.values(ws?.teams || {})
       .map(
@@ -249,7 +253,7 @@ function render() {
           `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '閲覧'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.4</div></aside><main class="main">${ws ? `<nav class="tabbar" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}<div class="footer-note"><span>● 入力内容はサーバーへ保存され、チームで共有されます</span><span>AI提案はプレビュー後に適用 · 自動フォールバックなし</span></div>` : emptyWorkshopView()}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.4.1</div></aside><main class="main" data-step="${tab}">${ws ? `<nav class="tabbar tab-tone-${tab}" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}${teamNotice()}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section>${t ? adviceView() : ''}` : emptyWorkshopView()}</main></div>`;
   $('#account').onclick = accountDialog;
   $('#logout').onclick = guarded(async () => {
     stopRecording();
@@ -394,6 +398,7 @@ function collapsedTopics() {
   return mapCollapsed.get(key);
 }
 function descendantCount(id, nodes = team().nodes) {
+  if (id === 'theme') return nodes.length;
   const visited = new Set();
   let frontier = [id];
   while (frontier.length) {
@@ -418,20 +423,94 @@ function mapView() {
   };
   const branch = (parent, depth = 1) => {
     if (depth > 500) return '';
-    const children = nodes.filter((n) => n.parent === parent);
+    const children = nodes.filter((n) =>
+      parent === 'theme' ? n.parent === parent || n.parent === null : n.parent === parent,
+    );
     if (!children.length) return '';
     return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
   };
   const rootEdit = inlineEdit?.id === 'theme';
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
-  <div class="map-scroll"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme') ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div><div class="loose-area" data-map-zone="detach"><div class="loose-heading"><strong>単独の気づき</strong><span>${nodes.filter((n) => n.parent === null).length}件</span></div><p class="map-hint">新しい気づきは下へ順に追加</p>${branch(null)}${nodes.some((n) => n.parent === null) ? '' : '<div class="loose-empty">＋<br>新しい気づき、または<br>切り離す枝をここへ</div>'}</div></div></div>
-  <div class="map-actions"><span class="map-help">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · ドラッグ：移動'}</span><button type="button" data-map-zone="standalone"${disabled(canEdit)}>◇ 単独に</button><button type="button" class="danger" data-map-zone="delete"${disabled(canEdit)}>⌫ 削除</button></div></div>${inspectorView()}</div>`;
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：削除 · ドラッグ：移動'}</div></div></div>`;
 }
-function inspectorView() {
+function topicActionsDialog() {
+  if (!editableTeam() || !selected) return;
   const node = team().nodes.find((n) => n.id === selected),
-    canEdit = editableTeam();
-  return `<form class="panel inspector" id="node-form"><div class="row between"><h3>${node ? '気づきを編集' : '気づきを追加'}</h3><button type="button" id="new-node" class="text-button"${disabled(canEdit)}>＋ 新規</button></div><p>気になったこと、感じたことを自由に。<br>追加後にドラッグしてつなげられます。</p><div class="field-label"><label for="node-text">言葉・気づき</label><button type="button" id="map-record" class="mic-button ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" aria-pressed="${recording?.destination === 'map'}" aria-describedby="voice-status"${disabled((canEdit && !recordingStarting) || recording?.destination === 'map')}>${micIcon()}<span>${recording?.destination === 'map' ? '停止' : '音声入力'}</span></button></div><textarea id="node-text" data-draft="node-text" maxlength="500" placeholder="どんなことが気になる？" required${disabled(canEdit)}>${esc(node?.text || '')}</textarea><p id="voice-status" class="voice-status">${aiAvailable('transcribe') ? 'マイクで録音し、停止後に内容を確認して入力できます。' : '音声入力は、認可済みAIの接続設定後に利用できます。'}</p><label>グループの色</label><div class="colors">${Array.from({ length: 8 }, (_, i) => `<button type="button" class="color g${i} ${(node?.group ?? color) === i ? 'active' : ''}" data-color="${i}" aria-label="色グループ${i + 1}" aria-pressed="${(node?.group ?? color) === i}"${disabled(canEdit)}></button>`).join('')}</div><button class="primary"${disabled(canEdit)}>${node ? '変更を保存' : '＋ マップに追加'}</button>${node ? `<div class="node-commands"><button type="button" id="connect-node"${disabled(canEdit)}>${mapConnectId ? '接続先の選択をやめる' : '↗ 接続先を選ぶ'}</button><button type="button" id="add-sibling"${disabled(canEdit)}>同階層を追加（Enter）</button><button type="button" id="add-child-topic"${disabled(canEdit)}>子を追加（Insert）</button><button type="button" id="detach-node"${disabled(canEdit && node.parent !== null)}>枝ごと切り離す</button><button type="button" id="single-node"${disabled(canEdit)}>この項目だけ単独にする</button><button type="button" id="delete-node" class="danger"${disabled(canEdit)}>この項目を削除</button></div>` : ''}</form>`;
+    root = selected === 'theme';
+  if (!node && !root) return;
+  openDialog(
+    `<h2>トピックの操作</h2><p>${esc(root ? team().rootText || ws.theme : node.text)}</p><div class="topic-menu"><button id="edit-topic">文字を編集（F2）</button><button id="add-sibling">同階層を追加（Enter）</button><button id="add-child-topic">子を追加（Insert）</button>${root ? '' : `<button id="connect-node">接続先を選ぶ</button><button id="detach-node">枝ごと切り離す</button><button id="delete-node" class="danger">削除（Delete）</button><div class="colors">${Array.from({ length: 8 }, (_, i) => `<button class="color g${i}" data-topic-color="${i}" aria-label="色グループ${i + 1}" aria-pressed="${node.group === i}"></button>`).join('')}</div>`}</div>`,
+  );
+  $('#edit-topic').onclick = () => {
+    modal.close();
+    beginInline(selected);
+  };
+  $('#add-sibling').onclick = () => {
+    modal.close();
+    beginInline(selected, 'sibling');
+  };
+  $('#add-child-topic').onclick = () => {
+    modal.close();
+    beginInline(selected, 'child');
+  };
+  if (!root) {
+    $('#connect-node').onclick = () => {
+      modal.close();
+      mapConnectId = selected;
+      render();
+    };
+    $('#detach-node').onclick = guarded(async () => {
+      await moveMapNode(selected, null);
+      modal.close();
+    });
+    $('#delete-node').onclick = () => confirmDeleteNode(selected);
+    $$('[data-topic-color]').forEach(
+      (b) =>
+        (b.onclick = guarded(async () => {
+          await action('node', {
+            teamId,
+            id: node.id,
+            text: node.text,
+            group: Number(b.dataset.topicColor),
+          });
+          modal.close();
+        })),
+    );
+  }
 }
+function updateMapStage() {
+  const canvas = $('#mindmap'),
+    scroll = $('.map-scroll'),
+    stage = $('#map-stage');
+  if (!canvas || !scroll || !stage) return;
+  const width = canvas.offsetWidth,
+    height = canvas.offsetHeight,
+    availableWidth = Math.max(1, scroll.clientWidth - 24),
+    availableHeight = Math.max(1, scroll.clientHeight - 24);
+  stage.style.width = `${Math.max(availableWidth, width * zoom)}px`;
+  stage.style.height = `${Math.max(availableHeight, height * zoom)}px`;
+  canvas.style.left = `${Math.max(0, (availableWidth - width * zoom) / 2)}px`;
+  canvas.style.top = `${Math.max(0, (availableHeight - height * zoom) / 2)}px`;
+  canvas.style.transform = `scale(${zoom})`;
+  $('#zoom-label').textContent =
+    `${zoom < 0.1 ? (zoom * 100).toFixed(1) : Math.round(zoom * 100)}%`;
+  drawMapLinks();
+}
+function fitMap() {
+  const canvas = $('#mindmap'),
+    scroll = $('.map-scroll');
+  if (!canvas || !scroll) return;
+  if (canvas.offsetWidth && canvas.offsetHeight)
+    zoom = Math.min(
+      1,
+      Math.max(1, scroll.clientWidth - 24) / canvas.offsetWidth,
+      Math.max(1, scroll.clientHeight - 24) / canvas.offsetHeight,
+    );
+  updateMapStage();
+  scroll.scrollLeft = 0;
+  scroll.scrollTop = 0;
+}
+
 function drawMapLinks() {
   const canvas = $('#mindmap'),
     svg = $('#map-links');
@@ -457,8 +536,8 @@ function drawMapLinks() {
       `<path d="M${x1},${y1} C${x1 + (x2 - x1) * 0.55},${y1} ${x1 + (x2 - x1) * 0.45},${y2} ${x2},${y2}" stroke="${color}" stroke-width="${depth === 1 ? 3.2 : 1.2}" fill="none"/>`,
     );
   }
-  svg.setAttribute('width', String(canvas.scrollWidth));
-  svg.setAttribute('height', String(canvas.scrollHeight));
+  svg.setAttribute('width', String(canvas.offsetWidth));
+  svg.setAttribute('height', String(canvas.offsetHeight));
   svg.innerHTML = paths.join('');
 }
 
@@ -490,7 +569,7 @@ function adviceView() {
       !((tab === 1 || tab === 3) && votingOpen(tab === 1 ? 'cards' : 'ideas')) &&
       message?.should_speak &&
       (s.manual || s.expires > Date.now());
-  return `<section class="ai-advice ${s.muted ? 'muted-robot' : ''}" aria-label="AIアドバイス"><div class="robot-avatar robot-${s.muted ? 'muted' : s.busy ? 'thinking' : show ? message.robot_animation : 'observing'}">${robotIcon()}</div><div class="advice-body"><div class="row between"><h3>AIアドバイス <span class="guide-label">${message?.source === 'ai' ? '認可済みAI' : 'md基本ガイド'}</span></h3><button id="mute-advice" class="text-button" aria-pressed="${s.muted}">${s.muted ? '助言を再開' : '助言をミュート'}</button></div>${show ? `<div class="robot-bubble" role="status" aria-live="polite"><p id="advice-message">${esc(message.bubble_text)}</p><div class="row"><button id="dismiss-advice" class="text-button">閉じる</button><button id="later-advice" class="text-button">あとで</button><button id="answer-advice" class="text-button">考えを入力する ↗</button>${message.proposal ? '<button id="preview-clusters">分類案を確認</button>' : ''}</div></div>` : `<p class="muted">${s.muted ? '助言を休止しています。' : s.busy ? 'チームの内容を確認しています…' : '必要なときに短い問いで、発想や整理をお手伝いします。'}</p>`}<div class="row advice-actions"><button id="next-advice"${disabled(editableTeam() && !s.muted && !s.busy)}>助言をもらう</button>${tab === 0 ? `<button id="classify-advice"${disabled(editableTeam() && aiAvailable('classify'))}>グループ整理案</button>${team().lastGrouping ? `<button id="undo-classify"${disabled(editableTeam())}>分類を元に戻す</button>` : ''}` : ''}<span class="muted">${aiAvailable('questions') ? '管理者設定のmdを読み込んで助言します。' : 'AI未接続：管理者設定のmdにある基本ガイドを表示します。'}</span></div></div></section>`;
+  return `<section class="ai-advice ${s.muted ? 'muted-robot' : ''}" aria-label="AIアドバイス"><div class="advice-robot"><div class="robot-avatar robot-${s.muted ? 'muted' : s.busy ? 'thinking' : show ? message.robot_animation : 'observing'}">${robotIcon()}</div><button id="next-advice"${disabled(editableTeam() && !s.muted && !s.busy)}>助言をもらう</button></div><div class="advice-body"><div class="row between"><h3>AIアドバイス <span class="guide-label">${message?.source === 'ai' ? '認可済みAI' : 'md基本ガイド'}</span></h3><button id="mute-advice" class="text-button" aria-pressed="${s.muted}">${s.muted ? '助言を再開' : '助言をミュート'}</button></div>${show ? `<div class="robot-bubble" role="status" aria-live="polite"><p id="advice-message">${esc(message.bubble_text)}</p><div class="row"><button id="dismiss-advice" class="text-button">閉じる</button><button id="later-advice" class="text-button">あとで</button><button id="answer-advice" class="text-button">考えを入力する ↗</button>${message.proposal ? '<button id="preview-clusters">分類案を確認</button>' : ''}</div></div>` : `<p class="muted">${s.muted ? '助言を休止しています。' : s.busy ? 'チームの内容を確認しています…' : '必要なときに短い問いで、発想や整理をお手伝いします。'}</p>`}<div class="row advice-actions">${tab === 0 ? `<button id="classify-advice"${disabled(editableTeam() && aiAvailable('classify'))}>グループ整理案</button>${team().lastGrouping ? `<button id="undo-classify"${disabled(editableTeam())}>分類を元に戻す</button>` : ''}` : ''}<span class="muted">${aiAvailable('questions') ? '管理者設定のmdを読み込んで助言します。' : 'AI未接続：管理者設定のmdにある基本ガイドを表示します。'}</span></div></div></section>`;
 }
 function refreshAdvice() {
   const el = $('.ai-advice');
@@ -531,7 +610,11 @@ function bindAdvice() {
   if ($('#later-advice')) $('#later-advice').onclick = feedback('later');
   if ($('#answer-advice'))
     $('#answer-advice').onclick = () => {
-      const input = $('#node-text') || $('#what');
+      if (tab === 0) {
+        beginInline('theme', 'child');
+        return;
+      }
+      const input = $('#what');
       input?.focus();
       input?.scrollIntoView({ block: 'nearest' });
     };
@@ -676,15 +759,15 @@ function deckView() {
   const t = team(),
     d = t.discussion,
     slots = Math.max(3, Math.min(5, t.deck.length + 1));
-  return `<div class="deck-discussion"><div class="panel"><div class="panel-title"><h3>アイディアのデッキ <span class="muted">${t.deck.length} / 5 枚</span></h3><span class="muted">まずは3枚、最大5枚まで</span></div><div class="deck" id="deck">${Array.from(
+  return `<div class="deck-workspace"><div class="panel"><div class="panel-title"><h3>アイディアのデッキ <span class="muted">${t.deck.length} / 5 枚</span></h3><span class="muted">まずは3枚、最大5枚まで</span></div><div class="deck" id="deck">${Array.from(
     { length: slots },
     (_, i) => {
       const n = t.nodes.find((n) => n.id === t.deck[i]);
-      return `<div class="slot ${n ? 'filled g' + n.group : ''}" data-slot="${i}">${n ? `<span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(editableTeam())}>×</button><p>${esc(n.text)}</p>` : '<span>＋</span><span>カードをここへ</span>'}<span class="slot-number">0${i + 1}</span></div>`;
+      return `<div class="slot ${n ? 'filled' : ''}" data-slot="${i}">${n ? `<article class="deck-card sticky g${n.group}" data-deck-card="${n.id}" draggable="${editableTeam()}"><span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(editableTeam())}>×</button><p>${esc(n.text)}</p></article>` : '<span>＋</span><span>カードをここへ</span>'}<span class="slot-number">0${i + 1}</span></div>`;
     },
   ).join(
     '',
-  )}</div><form id="discussion-form"><div class="discussion-editor"><div><div class="row between"><h3>ディスカッション記録</h3><span class="${d.running ? 'recording' : 'muted'}">${d.running ? '● 議論中' : 'レビュー / 待機中'}</span></div><textarea id="transcript" data-draft="transcript" class="transcript" maxlength="30000" placeholder="議論の内容を入力できます。認可済み音声認識を設定すると録音から文字起こしできます。"${disabled(editableTeam())}>${esc(d.transcript)}</textarea><div class="row between"><button type="button" id="record-discussion"${disabled(editableTeam() && d.running && aiAvailable('transcribe'))}>${recording ? '■ 録音を停止' : '◉ 録音・文字起こし'}</button><span class="save-hint">最大約6MB / 1回</span></div><p class="muted">${aiStatus('transcribe')}</p><small class="muted">議論ラウンド: ${d.rounds.length} 回完了</small></div><div class="summary"><h3>アイディアの輪郭</h3><div class="row"><label for="what">WHAT</label><input id="what" data-draft="what" maxlength="40" placeholder="創出する価値（40文字以内）" value="${esc(d.what)}"${disabled(editableTeam())}></div><div class="row"><label for="who">WHO</label><input id="who" data-draft="who" maxlength="40" placeholder="誰に（40文字以内）" value="${esc(d.who)}"${disabled(editableTeam())}></div><div class="row"><label for="how">HOW</label><textarea id="how" data-draft="how" maxlength="120" placeholder="どうやって（120文字以内）"${disabled(editableTeam())}>${esc(d.how)}</textarea></div><label for="points">重要な論点（1行に1つ）</label><textarea id="points" data-draft="points" maxlength="5000"${disabled(editableTeam())}>${esc(d.points)}</textarea><label for="keywords">強調するキーワード（読点・カンマで区切る）</label><input id="keywords" data-draft="keywords" maxlength="500" value="${esc(d.keywords)}"${disabled(editableTeam())}><div class="row between"><button class="primary"${disabled(editableTeam())}>記録を保存</button><button type="button" id="preview-summary" class="text-button">文章プレビュー</button></div></div></div></form></div><aside class="panel discussion-control"><div><div class="eyebrow">LET’S COMBINE</div><h3>カードをつないで、<br>まだない価値を。</h3><p>選んだ言葉の間にある関係を話し合い、アイディアの輪郭をまとめましょう。</p></div><div><button id="discussion-toggle" class="primary"${disabled(editableTeam())}>${d.running ? '■ ディスカッションの終了' : '▶ ディスカッションの開始'}</button><p>終了後は内容をレビュー。何度でも再開して議論を追加できます。</p><div class="stack"><button data-ai="summarize"${disabled(editableTeam() && aiAvailable('summarize'))}>✧ 議論をAIで整理</button><button data-ai="keywords"${disabled(editableTeam() && aiAvailable('keywords'))}>重要キーワードを抽出</button><button data-ai="image" class="accent"${disabled(editableTeam() && aiAvailable('image') && !!me.ai.imagePrompt)}>アイディアの可視化・画像化 ↗</button></div><p>${me.ai.imagePrompt ? '画像生成は設定済みプロンプトで実行します。' : '画像生成プロンプトは未設定です。管理者が後日設定できます。'}<br>${aiStatus('summarize')}</p></div></aside></div>${cardView(true)}`;
+  )}</div></div>${cardView(true)}</div><div class="deck-discussion"><div class="panel"><form id="discussion-form"><div class="discussion-editor"><div><div class="row between"><h3>ディスカッション記録</h3><span class="${d.running ? 'recording' : 'muted'}">${d.running ? '● 議論中' : 'レビュー / 待機中'}</span></div><textarea id="transcript" data-draft="transcript" class="transcript" maxlength="30000" placeholder="議論の内容を入力できます。認可済み音声認識を設定すると録音から文字起こしできます。"${disabled(editableTeam())}>${esc(d.transcript)}</textarea><div class="row between"><button type="button" id="record-discussion"${disabled(editableTeam() && d.running && aiAvailable('transcribe'))}>${recording ? '■ 録音を停止' : '◉ 録音・文字起こし'}</button><span class="save-hint">最大約6MB / 1回</span></div><p class="muted">${aiStatus('transcribe')}</p><small class="muted">議論ラウンド: ${d.rounds.length} 回完了</small></div><div class="summary"><h3>アイディアの輪郭</h3><div class="row"><label for="what">WHAT</label><input id="what" data-draft="what" maxlength="40" placeholder="創出する価値（40文字以内）" value="${esc(d.what)}"${disabled(editableTeam())}></div><div class="row"><label for="who">WHO</label><input id="who" data-draft="who" maxlength="40" placeholder="誰に（40文字以内）" value="${esc(d.who)}"${disabled(editableTeam())}></div><div class="row"><label for="how">HOW</label><textarea id="how" data-draft="how" maxlength="120" placeholder="どうやって（120文字以内）"${disabled(editableTeam())}>${esc(d.how)}</textarea></div><label for="points">重要な論点（1行に1つ）</label><textarea id="points" data-draft="points" maxlength="5000"${disabled(editableTeam())}>${esc(d.points)}</textarea><label for="keywords">強調するキーワード（読点・カンマで区切る）</label><input id="keywords" data-draft="keywords" maxlength="500" value="${esc(d.keywords)}"${disabled(editableTeam())}><div class="row between"><button class="primary"${disabled(editableTeam())}>記録を保存</button><button type="button" id="preview-summary" class="text-button">文章プレビュー</button></div></div></div></form></div><aside class="panel discussion-control"><div><div class="eyebrow">LET’S COMBINE</div><h3>カードをつないで、<br>まだない価値を。</h3><p>選んだ言葉の間にある関係を話し合い、アイディアの輪郭をまとめましょう。</p></div><div><button id="discussion-toggle" class="primary"${disabled(editableTeam())}>${d.running ? '■ ディスカッションの終了' : '▶ ディスカッションの開始'}</button><p>終了後は内容をレビュー。何度でも再開して議論を追加できます。</p><div class="stack"><button data-ai="summarize"${disabled(editableTeam() && aiAvailable('summarize'))}>✧ 議論をAIで整理</button><button data-ai="keywords"${disabled(editableTeam() && aiAvailable('keywords'))}>重要キーワードを抽出</button><button data-ai="image" class="accent"${disabled(editableTeam() && aiAvailable('image') && !!me.ai.imagePrompt)}>アイディアの可視化・画像化 ↗</button></div><p>${me.ai.imagePrompt ? '画像生成は設定済みプロンプトで実行します。' : '画像生成プロンプトは未設定です。管理者が後日設定できます。'}<br>${aiStatus('summarize')}</p></div></aside></div>`;
 }
 function ideaView() {
   const teams = Object.values(ws.teams).filter((t) => t.image);
@@ -696,11 +779,8 @@ function selectTopic(id) {
   $$('[data-node],.map-root').forEach((b) =>
     b.classList.toggle('selected', (b.dataset.node || 'theme') === id),
   );
-  if ($('#node-form')) {
-    clearDraft();
-    $('#node-form').outerHTML = inspectorView();
-    bindInspector();
-  }
+  const actions = $('#topic-actions');
+  if (actions) actions.disabled = !editableTeam() || !selected;
 }
 function beginInline(id, placement) {
   if (!editableTeam() || recording || recordingStarting) return;
@@ -729,7 +809,17 @@ function beginInline(id, placement) {
   selected = inlineEdit.id;
   render();
 }
-async function commitInline() {
+function commitInline() {
+  const edit = inlineEdit;
+  if (!edit) return Promise.resolve(true);
+  if (edit.commitPromise) return edit.commitPromise;
+  edit.commitPromise = commitInlineNow();
+  edit.commitPromise.finally(() => {
+    delete edit.commitPromise;
+  });
+  return edit.commitPromise;
+}
+async function commitInlineNow() {
   const edit = inlineEdit;
   if (!edit) return true;
   if (edit.saving) return false;
@@ -768,87 +858,50 @@ async function commitInline() {
     return false;
   }
 }
-function bindInspector() {
-  $('#new-node').onclick = () => {
-    stopRecording();
-    clearDraft();
-    selected = null;
-    mapConnectId = null;
-    render();
-    $('#node-text').focus();
-  };
-  $$('[data-color]').forEach(
-    (b) =>
-      (b.onclick = () => {
-        color = Number(b.dataset.color);
-        editing = true;
-        $$('[data-color]').forEach((el) => {
-          el.classList.toggle('active', el === b);
-          el.setAttribute('aria-pressed', String(el === b));
-        });
-      }),
-  );
-  $('#node-text').oninput = () => {
-    editing = true;
-    remember();
-  };
-  $('#node-form').onsubmit = guarded(async (e) => {
-    e.preventDefault();
-    const payload = {
-      teamId,
-      id: selected === 'theme' ? null : selected,
-      text: $('#node-text').value,
-      group: color,
-    };
-    await action('node', payload);
-    selected = null;
-    mapConnectId = null;
-    render();
-    $('#node-text').focus();
-  });
-  $('#map-record').onclick = guarded(() => recordAudio('map'));
-  if ($('#connect-node'))
-    $('#connect-node').onclick = () => {
-      if (editing) return toast('編集を保存してから接続先を選んでください', true);
-      mapConnectId = mapConnectId ? null : selected;
-      render();
-    };
-  if ($('#add-sibling')) $('#add-sibling').onclick = () => beginInline(selected, 'sibling');
-  if ($('#add-child-topic')) $('#add-child-topic').onclick = () => beginInline(selected, 'child');
-  if ($('#detach-node')) $('#detach-node').onclick = guarded(() => moveMapNode(selected, null));
-  if ($('#single-node'))
-    $('#single-node').onclick = guarded(() => moveMapNode(selected, null, true));
-  if ($('#delete-node')) $('#delete-node').onclick = () => confirmDeleteNode(selected);
-}
 function bindMap() {
   $('#mindmap').style.transform = `scale(${zoom})`;
   const zoomTo = (n) => {
-    zoom = Math.min(1.5, Math.max(0.5, n));
+    mapFit = false;
+    zoom = Math.min(2, Math.max(0.02, n));
     $('#mindmap').style.transform = `scale(${zoom})`;
-    $('#zoom-label').textContent = `${Math.round(zoom * 100)}%`;
-    drawMapLinks();
+    updateMapStage();
   };
   $('#zoom-in').onclick = () => zoomTo(zoom + 0.1);
   $('#zoom-out').onclick = () => zoomTo(zoom - 0.1);
-  $('#collapse-all').onclick = () => {
+  $('#collapse-all').onclick = guarded(async () => {
+    if (inlineEdit && !(await commitInline())) return;
     for (const n of team().nodes) collapsedTopics().add(n.id);
     collapsedTopics().add('theme');
     render();
-  };
-  $('#expand-all').onclick = () => {
+  });
+  $('#expand-all').onclick = guarded(async () => {
+    if (inlineEdit && !(await commitInline())) return;
     collapsedTopics().clear();
     render();
-  };
+  });
   $$('[data-collapse]').forEach(
     (b) =>
-      (b.onclick = () => {
+      (b.onclick = guarded(async () => {
+        if (inlineEdit && !(await commitInline())) return;
         const closed = collapsedTopics(),
           id = b.dataset.collapse;
         closed.has(id) ? closed.delete(id) : closed.add(id);
         render();
-      }),
+      })),
   );
-  bindInspector();
+  $('#new-topic').onclick = guarded(async () => {
+    if (inlineEdit && !(await commitInline())) return;
+    beginInline('theme', 'child');
+  });
+  $('#map-record').onclick = guarded(() => recordAudio('map'));
+  $('#topic-actions').onclick = topicActionsDialog;
+  $('#fit-map').onclick = guarded(async () => {
+    if (inlineEdit && !(await commitInline())) return;
+    collapsedTopics().clear();
+    mapFit = true;
+    render();
+    requestAnimationFrame(fitMap);
+  });
   const input = $('#topic-editor');
   if (input) {
     const resize = () => {
@@ -902,6 +955,13 @@ function bindMap() {
       selectTopic(id);
     });
     button.ondblclick = () => beginInline(id);
+    button.oncontextmenu = (e) => {
+      if (editableTeam()) {
+        e.preventDefault();
+        selectTopic(id);
+        topicActionsDialog();
+      }
+    };
     button.onkeydown = (e) => {
       if (e.isComposing) return;
       if (['Enter', 'Insert', 'F2', 'Delete'].includes(e.key)) {
@@ -963,13 +1023,14 @@ function bindMap() {
         else await moveMapNode(selected, null, true);
       });
   });
-  requestAnimationFrame(drawMapLinks);
+  requestAnimationFrame(() => (mapFit ? fitMap() : updateMapStage()));
   mapObserver?.disconnect();
   if (window.ResizeObserver) {
-    mapObserver = new ResizeObserver(drawMapLinks);
+    mapObserver = new ResizeObserver(() => (mapFit ? fitMap() : updateMapStage()));
     mapObserver.observe($('#mindmap'));
+    mapObserver.observe($('.map-scroll'));
   }
-  document.fonts?.ready.then(drawMapLinks);
+  document.fonts?.ready.then(() => (mapFit ? fitMap() : updateMapStage()));
 }
 async function moveMapNode(id, parent, standalone = false) {
   if (!editableTeam()) throw Error('他チームは閲覧のみです');
@@ -1020,13 +1081,20 @@ function bindStep() {
     .filter((b) => b.id !== 'map-record')
     .forEach((b) => (b.onclick = guarded(() => runAI(b.dataset.ai))));
   if (tab === 2) {
-    $$('[data-card]').forEach((c) =>
+    $$('[data-card],[data-deck-card]').forEach((c) =>
       c.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', c.dataset.card);
+        if (!editableTeam()) {
+          e.preventDefault();
+          return;
+        }
+        e.dataTransfer.setData('text/plain', c.dataset.card || c.dataset.deckCard);
         e.dataTransfer.effectAllowed = 'copy';
       }),
     );
     const add = async (nodeId, index) => {
+      if (!editableTeam()) throw Error('他チームは閲覧のみです');
+      if (!team().nodes.some((n) => n.id === nodeId))
+        throw Error('配置するカードを確認してください');
       const ids = team().deck.filter((x) => x !== nodeId);
       ids.splice(Math.min(index, ids.length), 0, nodeId);
       await action('deck', { teamId, ids });
@@ -1041,6 +1109,7 @@ function bindStep() {
       slot.ondragleave = () => slot.classList.remove('dragover');
       slot.ondrop = guarded(async (e) => {
         e.preventDefault();
+        e.stopPropagation();
         slot.classList.remove('dragover');
         await add(e.dataTransfer.getData('text/plain'), Number(slot.dataset.slot));
       });
@@ -1126,17 +1195,17 @@ async function runAI(task, extra = {}) {
   if (task === 'transcribe' && extra.destination === 'map') {
     const text = p.result.text || p.result.transcript || '';
     openDialog(
-      `<h2>音声入力を確認</h2><p class="muted">内容を修正して入力欄へ追記してください。マップへの保存は「マップに追加」で行います。</p><textarea id="voice-preview" maxlength="500">${esc(text)}</textarea><button id="use-voice" class="primary">入力欄へ追記</button>`,
+      `<h2>音声入力を確認</h2><p class="muted">内容を修正し、新しいトピックとしてマップ内で確認してください。</p><textarea id="voice-preview" maxlength="500">${esc(text)}</textarea><button id="use-voice" class="primary">トピックに入力</button>`,
     );
     $('#use-voice').onclick = guarded(() => {
-      const input = $('#node-text'),
-        value = [input.value, $('#voice-preview').value].filter(Boolean).join('\n');
-      if (value.length > 500) throw Error('合わせて500文字以内にしてください');
-      input.value = value;
-      editing = true;
-      remember();
+      const text = $('#voice-preview').value;
+      if (text.length > 500) throw Error('500文字以内にしてください');
       modal.close();
-      input.focus();
+      beginInline('theme', 'child');
+      if (inlineEdit) {
+        inlineEdit.text = text;
+        render();
+      }
     });
     return;
   }

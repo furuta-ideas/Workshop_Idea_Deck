@@ -70,8 +70,14 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
       data = state.available ? [{ id: ws.id, name: ws.name, status: ws.status }] : [];
     else if (path === `/api/workshops/${ws.id}`) data = view(ws, { ...admin, admin: state.admin });
     else if (path.endsWith('/action')) {
+      if (state.actionGate) await state.actionGate;
       const body = JSON.parse(options.body);
-      if (body.action === 'node')
+      if (body.action === 'node' && team.nodes.some((n) => n.id === body.payload.id))
+        Object.assign(
+          team.nodes.find((n) => n.id === body.payload.id),
+          body.payload,
+        );
+      else if (body.action === 'node')
         team.nodes.push({
           id: 'node-2',
           text: body.payload.text,
@@ -91,6 +97,7 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
       }
       if (body.action === 'reparent')
         team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
+      if (body.action === 'deck') team.deck = [...body.payload.ids];
       if (body.action === 'discussion') Object.assign(team.discussion, body.payload);
       if (body.action === 'timer') ws.timers[body.payload.phase] = { endsAt: Date.now() + 180000 };
       ws.revision++;
@@ -117,10 +124,11 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
   assert.equal(f.doc.querySelectorAll('[data-tab]').length, 4);
   assert.match(f.doc.querySelector('.map-root').textContent, /画面テスト/);
   assert.ok(f.doc.querySelector('#settings'));
-  f.doc.querySelector('#node-text').value = '新しい気づき';
-  f.doc
-    .querySelector('#node-form')
-    .dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  click(f, '#new-topic');
+  const topic = f.doc.querySelector('#topic-editor');
+  topic.value = '新しい気づき';
+  topic.dispatchEvent(new f.window.Event('input'));
+  topic.dispatchEvent(new f.window.FocusEvent('blur'));
   await settle();
   assert.equal(f.doc.querySelectorAll('[data-node]').length, 2);
   click(f, '[data-tab="1"]');
@@ -150,7 +158,8 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
 test('DOM: 閲覧者に設定歯車を表示せず、編集や音声認識も無効', async (t) => {
   const f = await setup(t, '閲覧者');
   assert.equal(f.doc.querySelector('#settings'), null);
-  assert.ok(f.doc.querySelector('#node-text').disabled);
+  assert.equal(f.doc.querySelector('#node-text'), null);
+  assert.ok(f.doc.querySelector('#new-topic').disabled);
   assert.ok(f.doc.querySelector('#map-record').disabled);
   assert.match(f.doc.querySelector('.notice').textContent, /閲覧モード/);
   assert.equal(f.calls.filter((c) => c.path.includes('/ai')).length, 0);
@@ -233,7 +242,8 @@ test('DOM: 他チームを表示できるが管理者でも編集・AI送信で�
   buttons[1].click();
   await settle();
   assert.match(f.doc.querySelector('#step-content').textContent, /他チームの気づき/);
-  assert.ok(f.doc.querySelector('#node-text').disabled);
+  assert.equal(f.doc.querySelector('#node-text'), null);
+  assert.ok(f.doc.querySelector('#new-topic').disabled);
   assert.ok(f.doc.querySelector('#map-record').disabled);
   assert.ok(f.doc.querySelector('#next-advice').disabled);
   assert.equal(f.doc.querySelector('.page-top'), null);
@@ -274,10 +284,13 @@ test('DOM: ダブルクリックで直接編集、Enterで同階層、Insertで�
   assert.equal(operations[0].body.action, 'node');
   assert.equal(operations[1].body.payload.placement, 'sibling');
   assert.equal(operations[2].body.payload.placement, 'child');
-  const toggle = f.doc.querySelector('[data-collapse]');
+  const toggle = f.doc.querySelector('[data-collapse]:not([data-collapse="theme"])');
   assert.ok(toggle);
   toggle.click();
-  assert.match(f.doc.querySelector('[data-collapse]').textContent, /1/);
+  assert.match(toggle.textContent, /−/);
+  assert.ok(
+    f.doc.querySelector('[data-collapse]:not([data-collapse="theme"])').textContent.includes('1'),
+  );
   assert.deepEqual(
     f.errors.map((e) => e.message),
     [],
@@ -286,12 +299,13 @@ test('DOM: ダブルクリックで直接編集、Enterで同階層、Insertで�
 
 test('DOM: 未接続マイクは録音許可やAI送信を行わず、入力中の文字を保持する', async (t) => {
   const f = await setup(t);
-  const input = f.doc.querySelector('#node-text');
+  click(f, '#new-topic');
+  const input = f.doc.querySelector('#topic-editor');
   input.value = '途中のメモ';
   input.dispatchEvent(new f.window.Event('input'));
   click(f, '#map-record');
   await settle();
-  assert.equal(f.doc.querySelector('#node-text').value, '途中のメモ');
+  assert.equal(f.doc.querySelector('#topic-editor').value, '途中のメモ');
   assert.match(f.doc.querySelector('#toast').textContent, /未設定/);
   assert.equal(
     f.calls.some((c) => c.path.endsWith('/ai')),
@@ -323,6 +337,112 @@ test('DOM: ドラッグで接続し、折り畳みはデータを書き換えず
   click(f, '[data-collapse="theme"]');
   assert.equal(f.doc.querySelectorAll('[data-node]').length, 1);
   assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, before);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 全体表示は折り畳みを展開し、縦横を収める縮尺を計算。編集パネル・単独枠は存在しない', async (t) => {
+  const f = await setup(t);
+  assert.equal(f.doc.querySelector('#node-form'), null);
+  assert.equal(f.doc.querySelector('.loose-area'), null);
+  assert.equal(f.doc.querySelector('.map-actions'), null);
+  const proto = f.window.HTMLElement.prototype;
+  Object.defineProperty(proto, 'offsetWidth', {
+    configurable: true,
+    get() {
+      return this.id === 'mindmap' ? 1800 : 0;
+    },
+  });
+  Object.defineProperty(proto, 'offsetHeight', {
+    configurable: true,
+    get() {
+      return this.id === 'mindmap' ? 900 : 0;
+    },
+  });
+  Object.defineProperty(proto, 'clientWidth', {
+    configurable: true,
+    get() {
+      return this.classList.contains('map-scroll') ? 924 : 0;
+    },
+  });
+  Object.defineProperty(proto, 'clientHeight', {
+    configurable: true,
+    get() {
+      return this.classList.contains('map-scroll') ? 474 : 0;
+    },
+  });
+  click(f, '#collapse-all');
+  assert.equal(f.doc.querySelectorAll('[data-node]').length, 0);
+  const before = f.calls.filter((c) => c.path.endsWith('/action')).length;
+  click(f, '#fit-map');
+  await settle();
+  assert.equal(f.doc.querySelectorAll('[data-node]').length, 1);
+  assert.equal(f.doc.querySelector('#zoom-label').textContent, '50%');
+  assert.equal(f.doc.querySelector('#mindmap').style.transform, 'scale(0.5)');
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, before);
+  assert.ok(f.doc.querySelector('.advice-robot #next-advice'));
+  for (let tab = 0; tab < 4; tab++) {
+    click(f, `[data-tab="${tab}"]`);
+    assert.ok(f.doc.querySelector(`.tabbar.tab-tone-${tab}`));
+  }
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 得票カードをデッキへドロップし、カードを別スロットへ移動・除去。閲覧時は変更不可', async (t) => {
+  const f = await setup(t);
+  f.team.nodes.push({ id: 'node-b', text: '別の気づき', group: 1, parent: null });
+  f.ws.votes.cards['admin@example.test'] = { 'node-1': 1, 'node-b': 1 };
+  click(f, '[data-tab="2"]');
+  const drop = async (id, index) => {
+    const target = f.doc.querySelector(`[data-slot="${index}"]`),
+      e = new f.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: { getData: () => id } });
+    target.dispatchEvent(e);
+    await settle();
+  };
+  await drop('node-1', 0);
+  assert.ok(f.doc.querySelector('[data-slot="0"] > .deck-card.g0'));
+  assert.equal(f.doc.querySelector('[data-deck-card]').draggable, true);
+  await drop('node-b', 1);
+  await drop('node-b', 0);
+  assert.deepEqual(f.team.deck, ['node-b', 'node-1']);
+  assert.equal(f.doc.querySelector('[data-slot="0"] [data-deck-card]').dataset.deckCard, 'node-b');
+  click(f, '[data-remove-deck="node-b"]');
+  await settle();
+  assert.deepEqual(f.team.deck, ['node-1']);
+  f.doc.querySelectorAll('[data-team]')[1].click();
+  await settle();
+  const before = f.calls.filter((c) => c.path.endsWith('/action')).length;
+  await drop('node-1', 0);
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, before);
+  assert.match(f.doc.querySelector('#toast').textContent, /閲覧のみ/);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 入力の保存中に全体表示を押しても二重追加せず、保存完了後に全体へ切り替える', async (t) => {
+  const f = await setup(t);
+  let release;
+  f.state.actionGate = new Promise((resolve) => (release = resolve));
+  click(f, '#new-topic');
+  const input = f.doc.querySelector('#topic-editor');
+  input.value = '保存中でも一度だけ追加';
+  input.dispatchEvent(new f.window.Event('input'));
+  input.dispatchEvent(new f.window.FocusEvent('blur'));
+  click(f, '#fit-map');
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/action')).length, 1);
+  release();
+  await settle();
+  assert.equal(f.team.nodes.filter((n) => n.text === '保存中でも一度だけ追加').length, 1);
+  assert.equal(f.doc.querySelector('#topic-editor'), null);
+  assert.equal(f.doc.querySelectorAll('[data-node]').length, 2);
   assert.deepEqual(
     f.errors.map((e) => e.message),
     [],
