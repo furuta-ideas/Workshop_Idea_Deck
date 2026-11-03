@@ -222,6 +222,42 @@ test('Notion本文: MindManager貼付けを一括予約し、Notionのトグル�
   );
 });
 
+test('Notion取消: 10秒待機中の枝削除を戻すと子孫を保持し、Notionへ削除を送らない', async (t) => {
+  const f = fixture(t),
+    original = await f.load();
+  await queue(f, 'deleteNode', { teamId: f.team.id, id: 'first' }, 1000);
+  let w = await queue(f, 'undoMap', { teamId: f.team.id }, 2000);
+  assert.deepEqual(w.teams[f.team.id].nodes, original.teams[f.team.id].nodes);
+  w = await f.n.content.flushScheduled(w.id, 12001);
+  assert.equal(w.documentSync.error, null);
+  assert.equal(
+    f.state.calls.some((c) => c.body?.in_trash),
+    false,
+  );
+});
+
+test('Notion取消: 削除送信中にCtrl+Z相当を保存し、次の背景送信で同じ論理IDと階層を復元', async (t) => {
+  const f = fixture(t),
+    original = await f.load();
+  const logical = (w) =>
+    w.teams[f.team.id].nodes.map(({ id, text, parent, group }) => ({ id, text, parent, group }));
+  let w = await queue(f, 'deleteNode', { teamId: f.team.id, id: 'first' }, 1000);
+  const gate = pause(f, (c) => c.method === 'PATCH' && c.body?.in_trash);
+  const sending = f.n.content.flushScheduled(w.id, 11001);
+  await gate.ready;
+  w = await queue(f, 'undoMap', { teamId: f.team.id }, 12000);
+  assert.deepEqual(logical(w), logical(original));
+  gate.release();
+  await sending;
+  w = f.store.get('workshops', w.id);
+  assert.equal(w.documentSync.queued, true);
+  assert.deepEqual(logical(w), logical(original));
+  w = await f.n.content.flushScheduled(w.id, 22001);
+  assert.equal(w.documentSync.error, null);
+  assert.notEqual(w.teams[f.team.id].nodes.find((n) => n.id === 'first').notionBlockId, 'first');
+  assert.deepEqual(logical(await f.load()), logical(original));
+});
+
 test('Notion本文: 見出し2/3/4/トグル・箇条書きの階層を起動時に取り込み、旧ローカル内容をバックアップ', async (t) => {
   const f = fixture(t, true),
     w = await f.load(),
@@ -266,7 +302,10 @@ test('Notion本文: アプリの文字・追加・枝移動・削除を即時反
   assert.equal(f.find(moved.notionBlockId).children.length, 2);
   w = await f.change('deleteNode', { teamId: f.team.id, id: 'third' });
   assert.equal(w.documentSync.error, null);
-  assert.ok(w.teams[f.team.id].nodes.find((n) => n.id === 'fourth'));
+  assert.equal(
+    w.teams[f.team.id].nodes.some((n) => n.id === 'fourth'),
+    false,
+  );
   assert.equal(text(f.find('unrelated')), '参加者一覧は保持');
   const codes = f.n.content.all(f.n.content.state(w).doc).filter((b) => b.type === 'code');
   assert.equal(codes.length, 6);

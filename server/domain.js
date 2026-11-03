@@ -1,5 +1,6 @@
 import { id, newWorkshop, newTeam, normalizeEmail, passwordHash } from './store.js';
 import { parseOutline } from './outline.js';
+import { mapActions, captureMap, recordMapUndo, removeCards, undoMap } from './map-history.js';
 
 export class Fault extends Error {
   constructor(status, message) {
@@ -136,6 +137,8 @@ export function mutate(store, user, wsId, body) {
         409,
       );
     const p = body.payload || {};
+    const mapTeam = mapActions.has(body.action) ? teamFor(ws, user, p.teamId) : null;
+    const mapBefore = mapTeam && captureMap(ws, mapTeam, body.action === 'deleteNode');
     if (body.action === 'vote') {
       const phase = p.phase;
       requireThat(['cards', 'ideas'].includes(phase), '投票先が不正です');
@@ -281,13 +284,19 @@ export function mutate(store, user, wsId, body) {
         team.nodes.some((n) => n.id === p.id),
         '項目がありません',
       );
-      team.nodes = team.nodes.filter((n) => n.id !== p.id);
-      if (ws.notionVoteBaseline?.cards) delete ws.notionVoteBaseline.cards[p.id];
-      team.nodes.forEach((n) => {
-        if (n.parent === p.id) n.parent = null;
-      });
-      team.deck = team.deck.filter((x) => x !== p.id);
-      for (const ballot of Object.values(ws.votes.cards)) delete ballot[p.id];
+      const removed = new Set([p.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const n of team.nodes)
+          if (removed.has(n.parent) && !removed.has(n.id)) {
+            removed.add(n.id);
+            changed = true;
+          }
+      }
+      removeCards(ws, team, removed);
+    } else if (body.action === 'undoMap') {
+      undoMap(store, ws, teamFor(ws, user, p.teamId), user);
     } else if (body.action === 'deck') {
       const team = teamFor(ws, user, p.teamId);
       const counts = totals(ws, 'cards');
@@ -363,6 +372,7 @@ export function mutate(store, user, wsId, body) {
     // A cancelled card vote can invalidate a previously selected deck.
     const counts = totals(ws, 'cards');
     for (const team of Object.values(ws.teams)) team.deck = team.deck.filter((x) => counts[x] > 0);
+    if (mapBefore) recordMapUndo(store, ws, mapTeam, user, mapBefore);
     ws.revision++;
     store.put('workshops', ws.id, ws);
     store.put('requests', requestKey, { at: Date.now() });

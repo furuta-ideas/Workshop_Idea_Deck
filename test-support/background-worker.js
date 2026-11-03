@@ -28,6 +28,9 @@ export class BackgroundProof extends ProductionState {
     this.app.notion.call = async () => ({ last_edited_time: 'fixture-edited' });
     this.ws = newWorkshop('Native background proof', 'native@example.test');
     this.ws.id = 'native-proof';
+    // Each proof starts fresh; an intentionally paused prior run may have left
+    // its persistent sender checkpoint behind in the local test namespace.
+    this.store.del('kv', `notion-outbox:${this.ws.id}`);
     this.team = Object.values(this.ws.teams)[0];
     this.team.nodes = [{ id: 'initial', text: 'frozen text', parent: null, group: 0 }];
     this.ws.notion = { pageId: 'fixture-page', checkedAt: Date.now() };

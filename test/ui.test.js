@@ -10,6 +10,7 @@ import { parseOutline } from '../server/outline.js';
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 async function setup(t, role = '管理者', loginState, viewState = {}) {
+  const mapBackups = [];
   const errors = [],
     calls = [],
     admin = { email: 'admin@example.test', admin: role === '管理者' };
@@ -89,6 +90,32 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
       }
       if (state.actionGate) await state.actionGate;
       const body = JSON.parse(options.body);
+      if (
+        [
+          'node',
+          'createTopic',
+          'pasteOutline',
+          'topicTheme',
+          'reparent',
+          'standalone',
+          'deleteNode',
+        ].includes(body.action)
+      )
+        mapBackups.push(structuredClone({ nodes: team.nodes, rootText: team.rootText }));
+      if (body.action === 'undoMap') Object.assign(team, mapBackups.pop());
+      if (body.action === 'deleteNode') {
+        const removed = new Set([body.payload.id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const n of team.nodes)
+            if (removed.has(n.parent) && !removed.has(n.id)) {
+              removed.add(n.id);
+              changed = true;
+            }
+        }
+        team.nodes = team.nodes.filter((n) => !removed.has(n.id));
+      }
       if (body.action === 'node' && team.nodes.some((n) => n.id === body.payload.id))
         Object.assign(
           team.nodes.find((n) => n.id === body.payload.id),
@@ -150,6 +177,79 @@ const click = (f, selector) => {
   assert.ok(el, selector);
   el.click();
 };
+
+test('DOM: Deleteとメニュー削除は確認なしで子孫を消し、Ctrl+Zとボタンで枝を戻せる', async (t) => {
+  const f = await setup(t);
+  f.team.nodes.push(
+    { id: 'child', text: '子の気づき', parent: 'node-1', group: 1 },
+    { id: 'grandchild', text: '孫の気づき', parent: 'child', group: 2 },
+  );
+  f.ws.revision++;
+  await f.state.poll();
+  click(f, '[data-node="node-1"]');
+  f.doc
+    .querySelector('[data-node="node-1"]')
+    .dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+  await settle();
+  assert.equal(f.doc.querySelector('#confirm-delete-node'), null);
+  assert.equal(f.doc.querySelector('#modal').open, false);
+  assert.equal(f.team.nodes.length, 0);
+  const undo = new f.window.KeyboardEvent('keydown', {
+    key: 'z',
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  f.doc.querySelector('.map-root').dispatchEvent(undo);
+  await settle();
+  assert.equal(undo.defaultPrevented, true);
+  assert.equal(f.team.nodes.length, 3);
+  assert.equal(f.team.nodes[2].parent, 'child');
+  click(f, '[data-node="node-1"]');
+  click(f, '#topic-actions');
+  click(f, '#delete-node');
+  await settle();
+  assert.equal(f.team.nodes.length, 0);
+  assert.equal(f.doc.querySelector('#modal').open, false);
+  click(f, '#undo-map');
+  await settle();
+  assert.equal(f.team.nodes.length, 3);
+  assert.deepEqual(
+    f.errors.map((e) => e.message),
+    [],
+  );
+});
+
+test('DOM: 文字入力中のCtrl+Zと閲覧者のCtrl+Zはマップ取消APIへ送らない', async (t) => {
+  const f = await setup(t);
+  click(f, '#new-topic');
+  const input = f.doc.querySelector('#topic-editor');
+  const undo = new f.window.KeyboardEvent('keydown', {
+    key: 'z',
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  input.dispatchEvent(undo);
+  await settle();
+  assert.equal(undo.defaultPrevented, false);
+  assert.equal(
+    f.calls.some((c) => c.body?.action === 'undoMap'),
+    false,
+  );
+  const viewer = await setup(t, '閲覧者');
+  assert.equal(viewer.doc.querySelector('#undo-map').disabled, true);
+  viewer.doc
+    .querySelector('.map-root')
+    .dispatchEvent(
+      new viewer.window.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
+    );
+  await settle();
+  assert.equal(
+    viewer.calls.some((c) => c.body?.action === 'undoMap'),
+    false,
+  );
+});
 
 test('DOM: MindManagerの8項目をCtrl+V相当で階層追加し、折り畳んだ枝もTAB形式でコピー', async (t) => {
   const f = await setup(t);

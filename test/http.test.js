@@ -162,6 +162,42 @@ test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちで�
   assert.equal(externalCalls, 0);
 });
 
+test('HTTP: 直接編集・親削除・取消を続けて保存し、削除した子孫を1操作で復元', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test'),
+    w = newWorkshop('取消HTTP', 'admin@example.test'),
+    team = Object.values(w.teams)[0];
+  team.nodes = [
+    { id: 'p', text: '親', parent: 'theme', group: 0 },
+    { id: 'c', text: '子', parent: 'p', group: 0 },
+  ];
+  f.app.store.put('workshops', w.id, w);
+  let current = w;
+  const act = async (action, payload) => {
+    const r = await f.req(
+      `/api/workshops/${w.id}/action`,
+      {
+        action,
+        payload: { teamId: team.id, ...payload },
+        revision: current.revision,
+        requestId: id(),
+      },
+      admin,
+    );
+    assert.equal(r.status, 200);
+    current = r.body;
+    return current;
+  };
+  await act('node', { id: 'p', text: '編集した親' });
+  await act('deleteNode', { id: 'p' });
+  assert.equal(current.teams[team.id].nodes.length, 0);
+  await act('undoMap', {});
+  assert.equal(current.teams[team.id].nodes.length, 2);
+  assert.equal(current.teams[team.id].nodes[0].text, '編集した親');
+  await act('undoMap', {});
+  assert.equal(current.teams[team.id].nodes[0].text, '親');
+});
+
 test('HTTP: Notionの読取り・送信が進行中でも編集と活動通知を拒否しない', async (t) => {
   const f = await setup(t),
     admin = await f.login('admin@example.test'),

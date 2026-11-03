@@ -275,7 +275,10 @@ test('マップ: 通常追加は末尾に単独、Enter同階層・Insert子、�
   assert.equal(result.teams[tId].nodes.find((n) => n.id === child.id).parent, null);
   f.act(f.editor, 'reparent', { teamId: tId, id: child.id, parent: floating.id });
   result = f.act(f.editor, 'deleteNode', { teamId: tId, id: floating.id });
-  assert.equal(result.teams[tId].nodes.find((n) => n.id === child.id).parent, null);
+  assert.equal(
+    result.teams[tId].nodes.some((n) => n.id === child.id),
+    false,
+  );
   assert.ok(!result.teams[tId].nodes.some((n) => n.id === floating.id));
   result = f.act(f.editor, 'topicTheme', { teamId: tId, text: 'チームの中心' });
   assert.equal(result.teams[tId].rootText, 'チームの中心');
@@ -297,4 +300,110 @@ test('既存マップ移行は中心への接続・文字を保存し、一度�
   assert.ok(after.teams[f.team.id].nodes.every((n) => n.parent === 'theme'));
   f.store.migrateMaps();
   assert.equal(f.store.get('workshops', old.id).revision, after.revision);
+});
+
+test('マップ取消: 親削除は全子孫・関連票・デッキをまとめて消し、1回の取消で同じ順序とIDへ戻る', (t) => {
+  const f = setup(t),
+    w = f.store.get('workshops', f.ws.id),
+    team = w.teams[f.team.id];
+  team.nodes = [
+    { id: 'p', text: '親', parent: 'theme', group: 1 },
+    { id: 'c', text: '子', parent: 'p', group: 2 },
+    { id: 'g', text: '孫', parent: 'c', group: 3 },
+    { id: 's', text: '隣', parent: 'theme', group: 0 },
+  ];
+  w.votes.cards = { [f.editor.email]: { p: 2, c: 1, s: 1 }, [f.admin.email]: { g: 1 } };
+  w.notionVoteBaseline = { cards: { g: 3 }, ideas: {} };
+  team.deck = ['p', 'c', 'g'];
+  f.store.put('workshops', w.id, w);
+  let result = f.act(f.editor, 'deleteNode', { teamId: team.id, id: 'p' });
+  assert.deepEqual(
+    result.teams[team.id].nodes.map((n) => n.id),
+    ['s'],
+  );
+  assert.deepEqual(result.teams[team.id].deck, []);
+  assert.deepEqual(result.votes.cards[f.editor.email], { s: 1 });
+  assert.deepEqual(result.notionVoteBaseline.cards, {});
+  result = f.act(f.editor, 'undoMap', { teamId: team.id });
+  assert.deepEqual(result.teams[team.id].nodes, team.nodes);
+  assert.deepEqual(result.teams[team.id].deck, team.deck);
+  assert.deepEqual(result.votes.cards, w.votes.cards);
+  assert.deepEqual(result.notionVoteBaseline, w.notionVoteBaseline);
+  assert.equal(JSON.stringify(view(result, f.editor)).includes('map-undo:'), false);
+});
+
+test('マップ取消: 追加・文字・色・移動・中心名・貼付け・単独化を順に取り消せる', (t) => {
+  const f = setup(t),
+    teamId = f.team.id,
+    original = f.store.get('workshops', f.ws.id).teams[teamId];
+  let w = f.act(f.editor, 'createTopic', { teamId, placement: 'main', text: '追加' }),
+    added = w.teams[teamId].nodes.at(-1);
+  f.act(f.editor, 'node', { teamId, id: added.id, text: '編集', group: 5 });
+  f.act(f.editor, 'reparent', { teamId, id: added.id, parent: f.team.nodes[0].id });
+  f.act(f.editor, 'topicTheme', { teamId, text: '新しい中心' });
+  f.act(f.editor, 'pasteOutline', {
+    teamId,
+    anchorId: added.id,
+    placement: 'child',
+    text: '子\n\t孫',
+  });
+  f.act(f.editor, 'standalone', { teamId, id: added.id });
+  for (let i = 0; i < 6; i++) w = f.act(f.editor, 'undoMap', { teamId });
+  assert.deepEqual(w.teams[teamId], original);
+  assert.throws(() => f.act(f.editor, 'undoMap', { teamId }), /取り消せるマップ操作がありません/);
+});
+
+test('マップ取消: 最大20操作・操作IDによる再送保護・Notion物理ID変更の保持', (t) => {
+  const f = setup(t),
+    teamId = f.team.id,
+    nodeId = f.team.nodes[0].id;
+  for (let i = 1; i <= 25; i++) f.act(f.editor, 'node', { teamId, id: nodeId, text: '編集' + i });
+  const w = f.store.get('workshops', f.ws.id);
+  w.teams[teamId].nodes[0].notionBlockId = 'new-physical-id';
+  f.store.put('workshops', w.id, w);
+  const req = id(),
+    revision = w.revision;
+  f.act(f.editor, 'undoMap', { teamId }, revision, req);
+  let result = f.act(f.editor, 'undoMap', { teamId }, revision, req);
+  assert.equal(result.teams[teamId].nodes[0].text, '編集24');
+  assert.equal(result.teams[teamId].nodes[0].notionBlockId, 'new-physical-id');
+  for (let i = 1; i < 20; i++) result = f.act(f.editor, 'undoMap', { teamId });
+  assert.equal(result.teams[teamId].nodes[0].text, '編集5');
+  assert.throws(() => f.act(f.editor, 'undoMap', { teamId }), /取り消せるマップ操作がありません/);
+});
+
+test('マップ取消: 他者のマップ更新を巻き戻さず、閲覧者・他班の取り消しを拒否', (t) => {
+  const f = setup(t),
+    teamId = f.team.id;
+  f.act(f.editor, 'node', { teamId, id: f.team.nodes[0].id, text: '自分の変更' });
+  assert.throws(() => f.act(f.admin, 'undoMap', { teamId }), /取り消せるマップ操作がありません/);
+  f.act(f.admin, 'node', { teamId, id: f.team.nodes[1].id, text: '他者の変更' });
+  const before = JSON.stringify(f.store.get('workshops', f.ws.id));
+  assert.throws(() => f.act(f.editor, 'undoMap', { teamId }), /別の編集/);
+  assert.throws(
+    () => f.act(f.viewer, 'undoMap', { teamId }),
+    (e) => e.status === 403,
+  );
+  assert.throws(
+    () => f.act(f.editor, 'undoMap', { teamId: f.other.id }),
+    (e) => e.status === 403,
+  );
+  assert.equal(JSON.stringify(f.store.get('workshops', f.ws.id)), before);
+});
+
+test('マップ取消: 削除後に振り直した票と競合する復元は全体をロールバックし履歴を保持', (t) => {
+  const f = setup(t),
+    w = f.store.get('workshops', f.ws.id),
+    teamId = f.team.id,
+    [a, b] = f.team.nodes;
+  w.votes.cards[f.editor.email] = { [a.id]: 5 };
+  w.timers.cards = { endsAt: Date.now() + 60000, closed: false };
+  f.store.put('workshops', w.id, w);
+  f.act(f.editor, 'deleteNode', { teamId, id: a.id });
+  for (let i = 0; i < 10; i++) f.act(f.editor, 'vote', { phase: 'cards', target: b.id, delta: 1 });
+  const before = JSON.stringify(f.store.get('workshops', w.id));
+  assert.throws(() => f.act(f.editor, 'undoMap', { teamId }), /投票と競合/);
+  assert.equal(JSON.stringify(f.store.get('workshops', w.id)), before);
+  for (let i = 0; i < 5; i++) f.act(f.editor, 'vote', { phase: 'cards', target: b.id, delta: -1 });
+  assert.ok(f.act(f.editor, 'undoMap', { teamId }).teams[teamId].nodes.some((n) => n.id === a.id));
 });

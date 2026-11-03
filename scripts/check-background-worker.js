@@ -38,11 +38,38 @@ try {
   assert.equal((await state()).waiting, true, 'Edit must finish before Notion resumes');
   assert.equal(body.teams[team.id].nodes[0].text, 'edited while sending');
   console.log(`Native Durable Object: edit returned 200 in ${elapsed}ms while alarm was paused`);
+  const act = async (action, payload, revision) => {
+    const r = await fetch(`${base}/api/workshops/native-proof/action`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(3000),
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'wid_session=native-session',
+        'X-CSRF-Token': 'native-csrf',
+        Origin: base,
+      },
+      body: JSON.stringify({
+        action,
+        payload: { teamId: team.id, ...payload },
+        revision,
+        requestId: crypto.randomUUID(),
+      }),
+    });
+    const value = await r.json();
+    assert.equal(r.status, 200, JSON.stringify(value));
+    return value;
+  };
+  const undone = await act('undoMap', {}, body.revision);
+  assert.equal(undone.teams[team.id].nodes[0].text, 'frozen text');
+  const edited = await act('node', { id: 'initial', text: 'edited after undo' }, undone.revision);
+  assert.equal(edited.teams[team.id].nodes[0].text, 'edited after undo');
+  assert.equal((await state()).waiting, true);
+  console.log('Native Durable Object: undo and subsequent edit both completed while sending');
 } finally {
   await fetch(`${base}/__proof/release`);
 }
 const completed = await until((s) => !s.workshop.documentSync.syncing);
 assert.deepEqual(completed.sentTexts, ['frozen text']);
-assert.equal(completed.workshop.teams[team.id].nodes[0].text, 'edited while sending');
+assert.equal(completed.workshop.teams[team.id].nodes[0].text, 'edited after undo');
 assert.equal(completed.workshop.documentSync.queued, true);
 console.log('Frozen snapshot sent; newer edit remains saved and queued. No rollback.');

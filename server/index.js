@@ -10,6 +10,7 @@ import { AI } from './ai.js';
 import { Notion } from './notion.js';
 import { validatePNG } from './png.js';
 import { Facilitator } from './facilitator.js';
+import { captureMap, recordMapUndo } from './map-history.js';
 import {
   Fault,
   requireThat,
@@ -539,6 +540,7 @@ export function createApp(config = configuration(), overrides = {}) {
         requireThat(ws.revision === p.revision, '別の更新があるため再実行してください', 409);
         const team = teamFor(ws, user, p.teamId),
           r = p.result;
+        const mapBefore = captureMap(ws, team);
         if (p.task === 'image') {
           team.image = validatePNG(r.pngBase64);
           if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[team.id];
@@ -583,6 +585,7 @@ export function createApp(config = configuration(), overrides = {}) {
             applied: team.nodes.map((n) => ({ id: n.id, group: n.group })),
           };
         } else throw new Fault(400, '質問は画面で参照し、回答を項目へ追加してください');
+        recordMapUndo(store, ws, team, user, mapBefore);
         ws.revision++;
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);

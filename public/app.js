@@ -48,7 +48,8 @@ let mapDragId = null,
   mapObserver = null,
   sessionEntered = false;
 const mapCollapsed = new Map();
-let mapFit = false;
+let mapFit = false,
+  mapUndoBusy = false;
 const advicePhases = ['ideation', 'selection', 'visualization', 'voting'];
 const brand = () =>
   '<div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><div class="brand-name">アイディアワークショップ支援ツール</div><div class="brand-sub">SMALL INSIGHTS. NEW POSSIBILITIES.</div></div></div>';
@@ -514,8 +515,8 @@ function mapView() {
     return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
   };
   const rootEdit = inlineEdit?.id === 'theme';
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
-  <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：削除 · ドラッグ：移動'}</div></div></div>`;
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="undo-map" class="text-button" title="マップ操作を取り消す（Ctrl＋Z・最大20操作）"${disabled(canEdit && !mapUndoBusy)}>↶ 元に戻す</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：枝ごと削除 · Ctrl＋Z：取り消し · ドラッグ：移動'}</div></div></div>`;
 }
 function topicActionsDialog() {
   if (!editableTeam() || !selected) return;
@@ -547,7 +548,7 @@ function topicActionsDialog() {
       await moveMapNode(selected, null);
       modal.close();
     });
-    $('#delete-node').onclick = () => confirmDeleteNode(selected);
+    $('#delete-node').onclick = () => deleteMapTopic(selected);
     $$('[data-topic-color]').forEach(
       (b) =>
         (b.onclick = guarded(async () => {
@@ -1037,6 +1038,7 @@ async function commitInlineNow() {
 }
 function bindMap() {
   $('#mindmap').style.transform = `scale(${zoom})`;
+  $('#undo-map').onclick = guarded(undoMapAction);
   $('#copy-outline').onclick = guarded(copyOutline);
   $('#paste-outline').onclick = pasteOutlineDialog;
   const zoomTo = (n) => {
@@ -1148,7 +1150,7 @@ function bindMap() {
       if (e.isComposing) return;
       if (['Enter', 'Insert', 'F2', 'Delete'].includes(e.key)) {
         e.preventDefault();
-        if (e.key === 'Delete' && id !== 'theme') confirmDeleteNode(id);
+        if (e.key === 'Delete' && id !== 'theme') deleteMapTopic(id);
         else
           beginInline(id, e.key === 'Enter' ? 'sibling' : e.key === 'Insert' ? 'child' : undefined);
       }
@@ -1190,7 +1192,7 @@ function bindMap() {
       const id = e.dataTransfer?.getData('application/x-workshop-node') || mapDragId;
       mapDragId = null;
       if (!editableTeam() || !team().nodes.some((n) => n.id === id)) return;
-      if (target.dataset.mapZone === 'delete') return confirmDeleteNode(id);
+      if (target.dataset.mapZone === 'delete') return deleteMapTopic(id);
       if (target.dataset.mapTarget === id) return;
       await moveMapNode(
         id,
@@ -1201,7 +1203,7 @@ function bindMap() {
     if (target.dataset.mapZone && target.tagName === 'BUTTON')
       target.onclick = guarded(async () => {
         if (!selected || selected === 'theme') return toast('操作するトピックを選択してください');
-        if (target.dataset.mapZone === 'delete') confirmDeleteNode(selected);
+        if (target.dataset.mapZone === 'delete') deleteMapTopic(selected);
         else await moveMapNode(selected, null, true);
       });
   });
@@ -1220,21 +1222,64 @@ async function moveMapNode(id, parent, standalone = false) {
   if (parent) collapsedTopics().delete(parent);
   await action(standalone ? 'standalone' : 'reparent', { teamId, id, parent });
 }
-function confirmDeleteNode(id) {
-  if (!editableTeam()) return;
-  const node = team().nodes.find((n) => n.id === id);
-  if (!node) return;
-  openDialog(
-    `<h2>この気づきを削除しますか？</h2><p>${esc(node.text)}</p><p class="muted">子の枝は単独の気づきとして残ります。この項目のカード投票とデッキ選択も取り消します。</p><div class="row"><button id="confirm-delete-node" class="danger">削除する</button><button id="cancel-delete-node">キャンセル</button></div>`,
-  );
-  $('#cancel-delete-node').onclick = () => modal.close();
-  $('#confirm-delete-node').onclick = guarded(async () => {
+function deleteMapTopic(id) {
+  return guarded(async () => {
+    if (!editableTeam() || inlineEdit || editing) return;
+    const node = team().nodes.find((n) => n.id === id);
+    if (!node) return;
+    const count = descendantCount(id) + 1;
+    selected = node.parent || 'theme';
+    if (modal.open) modal.close();
     await action('deleteNode', { teamId, id });
-    selected = null;
-    modal.close();
-    render();
-  });
+    toast(count + '件のトピックを削除しました。Ctrl＋Zで取り消せます');
+  })();
 }
+async function undoMapAction() {
+  if (!editableTeam() || inlineEdit || editing || mapUndoBusy) return;
+  mapUndoBusy = true;
+  const button = $('#undo-map');
+  if (button) button.disabled = true;
+  const previous = new Set(team().nodes.map((n) => n.id));
+  try {
+    await action('undoMap', { teamId });
+    const restored = team().nodes.find((n) => !previous.has(n.id));
+    selected =
+      restored?.id ||
+      (selected === 'theme' || team().nodes.some((n) => n.id === selected) ? selected : 'theme');
+    if (restored) {
+      let parent = restored.parent;
+      while (parent) {
+        collapsedTopics().delete(parent);
+        parent = team().nodes.find((n) => n.id === parent)?.parent;
+      }
+    }
+    render();
+    toast('前のマップ操作を取り消しました');
+  } finally {
+    mapUndoBusy = false;
+    if ($('#undo-map')) $('#undo-map').disabled = !editableTeam();
+  }
+}
+document.addEventListener('keydown', (event) => {
+  if (
+    !(event.ctrlKey || event.metaKey) ||
+    event.shiftKey ||
+    event.altKey ||
+    event.key.toLowerCase() !== 'z' ||
+    !sessionEntered ||
+    !me ||
+    !ws ||
+    !team() ||
+    tab !== 0 ||
+    modal.open ||
+    inlineEdit ||
+    editing ||
+    event.target.closest?.('input,textarea,select,[contenteditable="true"]')
+  )
+    return;
+  event.preventDefault();
+  if (!event.repeat) void guarded(undoMapAction)();
+});
 
 function bindStep() {
   if (tab === 0) bindMap();
