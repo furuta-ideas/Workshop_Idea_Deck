@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+.env
+.env.*
+!.env.example
+data/
+demo-data/
+coverage/
+test-results/
+*.log
+*.sqlite*

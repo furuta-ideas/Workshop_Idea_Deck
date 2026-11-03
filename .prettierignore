@@ -1,0 +1,6 @@
+node_modules
+.pnpm-store
+data
+demo-data
+pnpm-lock.yaml
+*.png

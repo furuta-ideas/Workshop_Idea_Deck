@@ -1,0 +1,26 @@
+{
+  "name": "workshop-idea-deck",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "demo": "node server/demo.js",
+    "test": "node --test --test-concurrency=1",
+    "check": "node scripts/check.js"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.2.2",
+    "@simplewebauthn/server": "^13.2.2",
+    "nodemailer": "^7.0.10",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "prettier": "3.6.2"
+  }
+}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#133b36" />
+    <title>アイディアワークショップ支援ツール</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/webauthn.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div id="splash" role="status" aria-label="アイディアワークショップ支援ツールを起動しています">
+      <img src="/WorkShop_Top.png" alt="アイディアワークショップ支援ツール オープニング" />
+    </div>
+    <div id="app" hidden></div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="modal">
+      <div id="modal-content"></div>
+      <button id="modal-close" class="icon close" aria-label="閉じる">×</button>
+    </dialog>
+  </body>
+</html>
