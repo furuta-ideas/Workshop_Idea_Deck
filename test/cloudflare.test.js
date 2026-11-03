@@ -10,6 +10,7 @@ import { scheduleAlarm } from '../cloudflare/scheduling.js';
 
 function fixture(t) {
   const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA recursive_triggers=ON');
   t.after(() => db.close());
   const storage = {
     sql: {
@@ -99,4 +100,22 @@ test('Cloudflareアラーム: 連続したブラウザー照会で送信予約�
   alarm = null;
   await scheduleAlarm(storage, 10000, 15000);
   assert.equal(alarm, 16000);
+});
+
+test('Cloudflare SQLite: 大きい画像等のJSONは行の上限内に分割し、Unicode復元・更新・期限削除を保つ', (t) => {
+  const { store, db } = fixture(t),
+    value = { text: 'あ😀'.repeat(400000), until: 5 };
+  store.put('kv', 'large', value);
+  assert.ok(db.prepare('SELECT length(body) AS size FROM kv WHERE id=?').get('large').size < 1000);
+  assert.ok(db.prepare('SELECT count(*) AS n FROM app_body_chunks').get().n > 1);
+  assert.deepEqual(store.get('kv', 'large'), value);
+  assert.deepEqual(store.all('kv'), [value]);
+  store.put('kv', 'large', value);
+  assert.deepEqual(store.get('kv', 'large'), value);
+  store.put('kv', 'large', { text: '短く更新' });
+  assert.equal(db.prepare('SELECT count(*) AS n FROM app_body_chunks').get().n, 0);
+  store.put('kv', 'large', value);
+  store.db.prepare("DELETE FROM kv WHERE json_extract(body,'$.until') < ?").run(10);
+  assert.equal(store.get('kv', 'large'), undefined);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM app_body_chunks').get().n, 0);
 });
