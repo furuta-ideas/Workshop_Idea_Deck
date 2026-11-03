@@ -71,6 +71,12 @@ const payload = (type, text, color = 'default') => ({
   },
 });
 const snapshotMarker = 'Workshop Idea Deck state v1';
+const applyBlockUpdate = (block, body) => {
+  const type = block.type,
+    content = body[type] ? { ...block[type], ...body[type] } : null;
+  Object.assign(block, body);
+  if (content) block[type] = content;
+};
 export class NotionContent {
   constructor(notion) {
     this.notion = notion;
@@ -510,7 +516,7 @@ export class NotionContent {
     state.patchAttempt = { id: block.id, body };
     this.save(ws, state);
     await this.notion.call(`blocks/${block.id}`, 'PATCH', body);
-    Object.assign(block, body);
+    applyBlockUpdate(block, body);
     delete state.patchAttempt;
     this.save(ws, state);
   }
@@ -526,7 +532,7 @@ export class NotionContent {
     }
     state.archiveAttempt = { id: block.id, parentId: block.parentId };
     this.save(ws, state);
-    await this.notion.call(`blocks/${block.id}`, 'PATCH', { archived: true });
+    await this.notion.call(`blocks/${block.id}`, 'PATCH', { in_trash: true });
     this.remove(state.doc, block.id);
     delete state.archiveAttempt;
     this.save(ws, state);
@@ -791,7 +797,7 @@ export class NotionContent {
           words(fresh) === words(desired) &&
           fresh[fresh.type]?.color === desired[desired.type]?.color
         ) {
-          Object.assign(b, a.body);
+          applyBlockUpdate(b, a.body);
           delete state.patchAttempt;
           this.save(ws, state);
         } else await this.patch(ws, state, b, a.body);

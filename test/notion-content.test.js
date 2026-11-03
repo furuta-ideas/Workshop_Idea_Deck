@@ -105,7 +105,9 @@ function fixture(t) {
         state.failPatch = false;
         return { ok: false, status: 503 };
       }
-      if (body.archived) b.archived = true;
+      if (body.archived !== undefined) return { ok: false, status: 400 };
+      if (body.in_trash) b.archived = true;
+      else if (body[b.type]) b[b.type] = { ...b[b.type], ...structuredClone(body[b.type]) };
       else Object.assign(b, structuredClone(body));
       state.version++;
       if (state.losePatch) {
@@ -330,4 +332,54 @@ test('Notion本文: 追加応答にブロックがない場合も実際の子一
   assert.equal(f.find('main').children.filter((b) => text(b) === '読返しで特定する').length, 1);
   w = await f.load();
   assert.equal(w.documentSync.error, null);
+});
+
+test('Notion本文: 削除は現行APIのin_trash指定を使い、旧archived指定を送信しない', async (t) => {
+  const f = fixture(t);
+  await f.load();
+  const w = await f.change('deleteNode', { teamId: f.team.id, id: 'fourth' });
+  assert.equal(w.documentSync.error, null);
+  assert.ok(f.state.calls.some((c) => c.body?.in_trash === true));
+  assert.ok(f.state.calls.every((c) => c.body?.archived === undefined));
+  assert.equal(f.find('fourth').archived, true);
+});
+
+test('Notion本文: 枝移動の旧コピー整理だけが失敗しても、再試行で論理IDと子孫を保つ', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  const ids = w.teams[f.team.id].nodes.map((n) => n.id).sort();
+  f.state.failPatch = true;
+  w = await f.change('reparent', { teamId: f.team.id, id: 'third', parent: 'main' });
+  assert.equal(w.documentSync.pending, true);
+  assert.ok(f.n.content.state(w).archiveAttempt);
+  w = await f.n.content.retry(w);
+  assert.equal(w.documentSync.error, null);
+  assert.equal(w.documentSync.pending, false);
+  assert.deepEqual(w.teams[f.team.id].nodes.map((n) => n.id).sort(), ids);
+  w = await f.load();
+  assert.deepEqual(w.teams[f.team.id].nodes.map((n) => n.id).sort(), ids);
+  assert.equal(w.teams[f.team.id].nodes.find((n) => n.id === 'third').parent, 'main');
+});
+
+test('Notion本文: 省略した色・書式をAPIが保持しても、自分の保存を外部変更と誤判定しない', async (t) => {
+  const f = fixture(t);
+  await f.load();
+  let w = await f.change('createTopic', {
+    teamId: f.team.id,
+    anchorId: 'main',
+    placement: 'child',
+    text: '往復確認',
+  });
+  assert.equal(w.documentSync.error, null);
+  const node = w.teams[f.team.id].nodes.find((n) => n.text === '往復確認');
+  let revision = w.revision;
+  w = await f.load();
+  assert.equal(w.revision, revision);
+  w = await f.change('node', { teamId: f.team.id, id: node.id, text: '更新した往復確認' });
+  revision = w.revision;
+  w = await f.load();
+  assert.equal(w.revision, revision);
+  w = await f.change('deleteNode', { teamId: f.team.id, id: node.id });
+  assert.equal(w.documentSync.error, null);
+  assert.ok(!w.teams[f.team.id].nodes.some((n) => n.id === node.id));
 });

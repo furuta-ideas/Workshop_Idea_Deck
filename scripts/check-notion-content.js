@@ -9,16 +9,26 @@ import { writeFileSync } from 'node:fs';
 const config = configuration(),
   store = new Store(join(config.dataDir, 'workshop.sqlite')),
   notion = new Notion(store, config);
+const roundtrip =
+  process.argv.includes('--roundtrip') || process.argv.includes('--resume-roundtrip');
+const targetPage = process.argv.find((a) => a.startsWith('--page='))?.slice(7),
+  targetTeam = process.argv.find((a) => a.startsWith('--team='))?.slice(7) || 'A班';
 try {
-  if (process.argv.includes('--initialize') || process.argv.includes('--roundtrip'))
-    await notion.sync();
+  if (roundtrip && !targetPage) throw Error('往復テストには --page=対象NotionページID が必要です');
+  if (process.argv.includes('--initialize') || roundtrip) await notion.sync();
   else
     for (const ws of store.all('workshops').filter((w) => w.notion)) {
       const page = await notion.call(`pages/${ws.notion.pageId}`);
       await notion.content.pull(ws, page.last_edited_time, true);
       store.put('workshops', ws.id, ws);
     }
-  for (let ws of store.all('workshops').filter((w) => w.notion)) {
+  for (let ws of store
+    .all('workshops')
+    .filter(
+      (w) =>
+        w.notion &&
+        (!targetPage || w.notion.pageId.replaceAll('-', '') === targetPage.replaceAll('-', '')),
+    )) {
     if (
       ws.documentSync?.error &&
       !(ws.documentSync.pending && process.argv.includes('--initialize'))
@@ -43,8 +53,10 @@ try {
       if (ws.documentSync?.pending) throw Error(ws.documentSync.error);
       console.log(JSON.stringify({ stage: 'initialize', synced: true }));
     }
-    if (process.argv.includes('--roundtrip')) {
-      const entry = Object.entries(ws.members).find(([, m]) => m.role === '管理者' && m.teamId),
+    if (roundtrip) {
+      const entry = Object.entries(ws.members).find(
+          ([, m]) => m.role === '管理者' && ws.teams[m.teamId]?.name === targetTeam,
+        ),
         user = { email: entry?.[0], admin: true },
         teamId = entry?.[1].teamId;
       if (!teamId) throw Error('管理者の割当チームが必要です');
@@ -59,23 +71,43 @@ try {
         if (result.documentSync?.pending) throw Error(result.documentSync.error);
         return result;
       };
-      const marker = `同期確認用・一時トピック ${id()}`;
-      ws = await act('createTopic', {
-        teamId,
-        placement: 'child',
-        anchorId: 'theme',
-        text: marker,
-      });
-      const node = ws.teams[teamId].nodes.find((n) => n.text === marker);
-      const created = await notion.call(`blocks/${node.notionBlockId}`);
-      if (created.type !== 'heading_2') throw Error('メイントピックの型が一致しません');
-      ws = await act('node', { teamId, id: node.id, text: marker + ' 更新' });
-      const updated = await notion.call(`blocks/${node.notionBlockId}`);
-      if (
-        updated.heading_2.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
-        marker + ' 更新'
-      )
-        throw Error('文字更新を確認できません');
+      let marker, node;
+      if (process.argv.includes('--resume-roundtrip')) {
+        const candidates = ws.teams[teamId].nodes.filter((n) =>
+          /^同期確認用・一時トピック [a-f0-9-]{36} 更新$/.test(n.text),
+        );
+        if (candidates.length !== 1) throw Error('再開対象の一時トピックを一意に特定できません');
+        node = candidates[0];
+        marker = node.text.replace(/ 更新$/, '');
+        const current = await notion.call(`blocks/${node.notionBlockId}`);
+        if (
+          current.type !== 'heading_2' ||
+          current.heading_2.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
+            node.text
+        )
+          throw Error('更新済みの一時トピックと一致しません');
+        console.log(JSON.stringify({ stage: 'resume', updatedTemporaryTopicVerified: true }));
+      } else {
+        marker = `同期確認用・一時トピック ${id()}`;
+        ws = await act('createTopic', {
+          teamId,
+          placement: 'child',
+          anchorId: 'theme',
+          text: marker,
+        });
+        node = ws.teams[teamId].nodes.find((n) => n.text === marker);
+        const created = await notion.call(`blocks/${node.notionBlockId}`);
+        if (created.type !== 'heading_2') throw Error('メイントピックの型が一致しません');
+        console.log(JSON.stringify({ stage: 'create', verified: true }));
+        ws = await act('node', { teamId, id: node.id, text: marker + ' 更新' });
+        const updated = await notion.call(`blocks/${node.notionBlockId}`);
+        if (
+          updated.heading_2.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
+          marker + ' 更新'
+        )
+          throw Error('文字更新を確認できません');
+        console.log(JSON.stringify({ stage: 'edit', verified: true }));
+      }
       ws = await act('deleteNode', { teamId, id: node.id });
       const reread = await notion.content.read(ws);
       if (notion.content.all(reread).some((b) => b.id === node.notionBlockId))
