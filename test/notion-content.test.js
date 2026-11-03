@@ -7,7 +7,7 @@ import { totals } from '../server/domain.js';
 const rt = (text) => [{ type: 'text', text: { content: text }, plain_text: text }];
 const text = (b) =>
   (b[b.type]?.rich_text || []).map((x) => x.text?.content || x.plain_text || '').join('');
-function fixture(t) {
+function fixture(t, legacy = false) {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const block = (id, type, value, children = []) => ({
@@ -40,6 +40,18 @@ function fixture(t) {
         : []),
     ]),
   ];
+  if (!legacy) {
+    const main = roots[2];
+    const toggle = (b) => {
+      const content = b[b.type];
+      delete b[b.type];
+      b.type = 'toggle';
+      b.toggle = { rich_text: content.rich_text, color: content.color };
+      b.children.forEach(toggle);
+    };
+    toggle(main);
+    roots.splice(2, 1, block('team-a', 'toggle', 'チーム：A班', [main]));
+  }
   const state = { roots, calls: [], version: 1, failPatch: false, loseAppend: false };
   const find = (id) => {
     let found;
@@ -95,7 +107,8 @@ function fixture(t) {
         list.splice(at, 0, n);
       }
       state.version++;
-      if (state.loseAppend) {
+      state.appendCount = (state.appendCount || 0) + 1;
+      if (state.loseAppend || state.loseAppendAt === state.appendCount) {
         state.loseAppend = false;
         throw Error('response lost after commit');
       }
@@ -144,7 +157,7 @@ function fixture(t) {
   return { store, n, ws, team, other, state, find, load, change };
 }
 test('Notion本文: 見出し2/3/4/トグル・箇条書きの階層を起動時に取り込み、旧ローカル内容をバックアップ', async (t) => {
-  const f = fixture(t),
+  const f = fixture(t, true),
     w = await f.load(),
     nodes = w.teams[f.team.id].nodes;
   assert.equal(w.documentSync.error, null);
@@ -201,13 +214,13 @@ test('Notion本文: 外部編集を再読込みし、不正JSONは全体を巻�
   await f.load();
   let w = await f.change('discussion', { teamId: f.team.id, what: 'アプリの案' });
   assert.equal(w.documentSync.error, null);
-  f.find('first').heading_3.rich_text = rt('Notionで編集した案');
+  f.find('first').toggle.rich_text = rt('Notionで編集した案');
   f.state.version++;
   w = await f.load();
   assert.equal(w.teams[f.team.id].nodes.find((n) => n.id === 'first').text, 'Notionで編集した案');
   const code = f.n.content.record(f.n.content.state(w).doc, w.teams[f.team.id], 3).code;
   f.find(code.id).code.rich_text = rt('{invalid');
-  f.find('first').heading_3.rich_text = rt('この変更も適用しない');
+  f.find('first').toggle.rich_text = rt('この変更も適用しない');
   f.state.version++;
   const before = structuredClone(w.teams);
   w = await f.load();
@@ -217,7 +230,7 @@ test('Notion本文: 外部編集を再読込みし、不正JSONは全体を巻�
 test('Notion本文: Notionで変更された同一トピックを上書きせず409で新内容を取り込む', async (t) => {
   const f = fixture(t);
   await f.load();
-  f.find('first').heading_3.rich_text = rt('外部の変更');
+  f.find('first').toggle.rich_text = rt('外部の変更');
   f.state.version++;
   await assert.rejects(
     () => f.change('node', { teamId: f.team.id, id: 'first', text: '上書き不可' }),
@@ -382,4 +395,95 @@ test('Notion本文: 省略した色・書式をAPIが保持しても、自分の
   w = await f.change('deleteNode', { teamId: f.team.id, id: node.id });
   assert.equal(w.documentSync.error, null);
   assert.ok(!w.teams[f.team.id].nodes.some((n) => n.id === node.id));
+});
+
+test('Notion本文: 旧見出しをチーム別のトグルだけに移行し、本文・論理ID・階層・投票・デッキを保つ', async (t) => {
+  const f = fixture(t, true);
+  let w = await f.load();
+  const original = w.teams[f.team.id].nodes.map(({ notionBlockId, ...n }) => n);
+  w.teams[f.team.id].deck = ['main'];
+  w.notionVoteBaseline = { cards: { main: 2 }, ideas: {} };
+  f.store.put('workshops', w.id, w);
+  w = await f.n.content.push(w);
+  assert.equal(w.documentSync.error, null);
+  const doc = f.n.content.state(w).doc;
+  assert.equal(doc.sections[1].roots.length, 2);
+  const check = (b) => {
+    assert.equal(b.type, 'toggle');
+    b.children.forEach(check);
+  };
+  doc.sections[1].roots.forEach(check);
+  assert.deepEqual(doc.sections[1].roots.map(text), ['チーム：A班', 'チーム：B班']);
+  assert.equal(f.find('main').archived, true);
+  assert.equal(text(f.find('unrelated')), '参加者一覧は保持');
+  w = await f.load();
+  assert.deepEqual(
+    w.teams[f.team.id].nodes.map(({ notionBlockId, ...n }) => n),
+    original,
+  );
+  assert.deepEqual(w.teams[f.team.id].deck, ['main']);
+  assert.equal(totals(w, 'cards').main, 2);
+  const writes = f.state.calls.filter((c) => c.method !== 'GET').length;
+  w = await f.n.content.push(w);
+  assert.equal(w.documentSync.error, null);
+  assert.equal(f.state.calls.filter((c) => c.method !== 'GET').length, writes);
+  const freshStore = new Store(':memory:');
+  t.after(() => freshStore.close());
+  const freshNotion = new Notion(freshStore, f.n.config, f.n.transport),
+    fresh = newWorkshop('再取込み', 'admin@example.test');
+  fresh.notion = { pageId: 'page', checkedAt: Date.now() };
+  await freshNotion.content.pull(fresh, 'after-migration', true);
+  assert.equal(fresh.documentSync.error, null);
+  const restored = Object.values(fresh.teams)[0];
+  assert.deepEqual(
+    restored.nodes.map(({ notionBlockId, ...n }) => n),
+    original,
+  );
+  assert.deepEqual(restored.deck, ['main']);
+  assert.equal(totals(fresh, 'cards').main, 2);
+});
+
+test('Notion本文: トグル移行の途中で追加応答を失っても、再開で重複せず全階層を保持する', async (t) => {
+  const f = fixture(t, true);
+  let w = await f.load();
+  const original = w.teams[f.team.id].nodes.map(({ notionBlockId, ...n }) => n);
+  f.state.loseAppendAt = 3;
+  w = await f.n.content.push(w);
+  assert.equal(w.documentSync.pending, true);
+  assert.ok(f.n.content.state(w).attempt);
+  w = await f.n.content.retry(w);
+  assert.equal(w.documentSync.error, null);
+  w = await f.load();
+  assert.deepEqual(
+    w.teams[f.team.id].nodes.map(({ notionBlockId, ...n }) => n),
+    original,
+  );
+  assert.equal(
+    f.n.content.teamRoots(w, f.n.content.state(w).doc, w.teams[f.team.id]).roots.length,
+    1,
+  );
+  assert.equal(
+    f.n.content.all(f.n.content.state(w).doc).filter((b) => text(b) === '1階層').length,
+    1,
+  );
+});
+
+test('Notion本文: トグルの各チームを別のマップに読み、空チームにも専用のトグルを作る', async (t) => {
+  const f = fixture(t);
+  let w = await f.load();
+  w = await f.n.content.push(w);
+  const doc = f.n.content.state(w).doc,
+    otherRoot = doc.sections[1].roots.find((b) => text(b) === 'チーム：B班');
+  assert.ok(otherRoot);
+  f.find(otherRoot.id).children.push({
+    id: 'b-topic',
+    type: 'toggle',
+    toggle: { rich_text: rt('B班専用'), color: 'default' },
+    children: [],
+  });
+  f.state.version++;
+  w = await f.load();
+  assert.equal(w.teams[f.other.id].nodes[0].text, 'B班専用');
+  assert.equal(w.teams[f.other.id].nodes[0].parent, 'theme');
+  assert.ok(!w.teams[f.team.id].nodes.some((n) => n.text === 'B班専用'));
 });

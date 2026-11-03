@@ -59,8 +59,6 @@ const signature = (tree) =>
       })),
     ),
   );
-const typeAt = (depth) =>
-  depth === 1 ? 'heading_2' : depth === 2 ? 'heading_3' : depth === 3 ? 'heading_4' : 'toggle';
 const payload = (type, text, color = 'default') => ({
   object: 'block',
   type,
@@ -148,15 +146,15 @@ export class NotionContent {
   }
   teamRoots(ws, doc, team) {
     const roots = doc.sections[1].roots,
-      wrapper = roots.find((b) => teamName(b) === team.name);
-    if (wrapper) return { parentId: wrapper.id, roots: wrapper.children };
-    const first =
-      Object.values(ws.teams).find((t) => t.name === 'A班') || Object.values(ws.teams)[0];
-    return first?.id === team.id
-      ? { parentId: ws.notion.pageId, roots: roots.filter((b) => teamName(b) === null) }
-      : { parentId: null, roots: [] };
+      wrapper = roots.find((b) => teamName(b) === team.name),
+      first = Object.values(ws.teams).find((t) => t.name === 'A班') || Object.values(ws.teams)[0],
+      legacy = first?.id === team.id ? roots.filter((b) => teamName(b) === null) : [];
+    return {
+      parentId: wrapper?.id || (legacy.length ? ws.notion.pageId : null),
+      roots: [...legacy, ...(wrapper?.children || [])],
+    };
   }
-  parseNodes(ws, doc, team) {
+  parseNodes(ws, doc, team, transitional = false) {
     const old = new Map(
         Object.values(ws.teams)
           .flatMap((t) => t.nodes)
@@ -192,9 +190,17 @@ export class NotionContent {
           group: Math.max(0, colors.indexOf(b[b.type]?.color)),
           parent,
         };
-        requireThat(!nodes.some((n) => n.id === node.id), 'NotionのカードIDが重複しています', 409);
+        requireThat(
+          transitional || !nodes.some((n) => n.id === node.id),
+          'NotionのカードIDが重複しています',
+          409,
+        );
         nodes.push(node);
-        requireThat(nodes.length <= 500, 'Notionのトピックは班ごとに500件以内です', 409);
+        requireThat(
+          nodes.length <= (transitional ? 1000 : 500),
+          'Notionのトピックは班ごとに500件以内です',
+          409,
+        );
         for (const c of b.children) visit(c, node.id);
       } else for (const c of b.children) visit(c, parent);
     };
@@ -600,9 +606,11 @@ export class NotionContent {
     this.save(ws, state);
   }
   async writeMap(ws, state, team) {
-    const layout = this.teamRoots(ws, state.doc, team);
-    let container = layout.parentId;
-    if (!container && team.nodes.length) {
+    // Capture the legacy roots before creating the team's wrapper. During a
+    // resumable copy, both old and new blocks can temporarily share a logical ID.
+    const oldNodes = this.parseNodes(ws, state.doc, team, true);
+    let container = state.doc.sections[1].roots.find((b) => teamName(b) === team.name)?.id;
+    if (!container) {
       const wrapper = await this.append(
         ws,
         state,
@@ -611,9 +619,7 @@ export class NotionContent {
       );
       container = wrapper.id;
     }
-    if (!container) return;
-    const oldNodes = this.parseNodes(ws, state.doc, team),
-      oldById = new Map(),
+    const oldById = new Map(),
       all = this.all(state.doc),
       byBlock = new Map(all.map((b) => [b.id, b]));
     for (const n of oldNodes)
@@ -633,7 +639,7 @@ export class NotionContent {
       );
       for (const c of b.children) checkSafe(c);
     };
-    const visit = async (parent, blockParent, depth, recreate = false) => {
+    const visit = async (parent, blockParent, recreate = false) => {
       const nodes = team.nodes.filter((n) =>
         parent === 'theme' ? n.parent === 'theme' || n.parent === null : n.parent === parent,
       );
@@ -641,16 +647,21 @@ export class NotionContent {
       for (const n of nodes) {
         const old = oldById.get(n.id),
           original = old && byBlock.get(old.notionBlockId);
-        const type = typeAt(depth);
         let b = original;
-        const changedParent =
-          old && old.parent !== n.parent && !(old.parent === 'theme' && n.parent === null);
-        if (!original || recreate || changedParent) {
+        const changedParent = original && original.parentId !== blockParent;
+        if (!original || recreate || changedParent || original.type !== 'toggle') {
           if (original) checkSafe(original);
-          b = await this.append(ws, state, blockParent, payload(type, n.text, colors[n.group]), 1, {
-            nodeId: n.id,
-            after: previous,
-          });
+          b = await this.append(
+            ws,
+            state,
+            blockParent,
+            payload('toggle', n.text, colors[n.group]),
+            1,
+            {
+              nodeId: n.id,
+              after: previous,
+            },
+          );
           n.notionBlockId = b.id;
           if (original) stale.add(original.id);
         } else if (
@@ -664,10 +675,10 @@ export class NotionContent {
         retained.add(b.id);
         previous = b.id;
         this.store.put('workshops', ws.id, ws);
-        await visit(n.id, b.id, depth + 1, b.id !== original?.id);
+        await visit(n.id, b.id, b.id !== original?.id);
       }
     };
-    await visit('theme', container, 1);
+    await visit('theme', container);
     for (const old of oldNodes)
       if (!retained.has(old.notionBlockId)) {
         const b = this.all(state.doc).find((b) => b.id === old.notionBlockId);

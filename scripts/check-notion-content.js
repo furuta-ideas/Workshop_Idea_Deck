@@ -6,32 +6,37 @@ import { Notion } from '../server/notion.js';
 import { Store, id } from '../server/store.js';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 const config = configuration(),
   store = new Store(join(config.dataDir, 'workshop.sqlite')),
   notion = new Notion(store, config);
 const roundtrip =
   process.argv.includes('--roundtrip') || process.argv.includes('--resume-roundtrip');
 const targetPage = process.argv.find((a) => a.startsWith('--page='))?.slice(7),
-  targetTeam = process.argv.find((a) => a.startsWith('--team='))?.slice(7) || 'A班';
+  targetTeam = process.argv.find((a) => a.startsWith('--team='))?.slice(7) || 'A班',
+  normalize = process.argv.includes('--normalize');
 try {
-  if (roundtrip && !targetPage) throw Error('往復テストには --page=対象NotionページID が必要です');
-  if (process.argv.includes('--initialize') || roundtrip) await notion.sync();
+  if ((roundtrip || normalize) && !targetPage)
+    throw Error('書込み対象の --page=対象NotionページID が必要です');
+  if (process.argv.includes('--initialize') || roundtrip || normalize) await notion.sync();
   else
     for (const ws of store.all('workshops').filter((w) => w.notion)) {
       const page = await notion.call(`pages/${ws.notion.pageId}`);
       await notion.content.pull(ws, page.last_edited_time, true);
       store.put('workshops', ws.id, ws);
     }
-  for (let ws of store
+  const targets = store
     .all('workshops')
     .filter(
       (w) =>
         w.notion &&
         (!targetPage || w.notion.pageId.replaceAll('-', '') === targetPage.replaceAll('-', '')),
-    )) {
+    );
+  if (targetPage && !targets.length) throw Error('指定されたNotionページが見つかりません');
+  for (let ws of targets) {
     if (
       ws.documentSync?.error &&
-      !(ws.documentSync.pending && process.argv.includes('--initialize'))
+      !(ws.documentSync.pending && (process.argv.includes('--initialize') || normalize))
     )
       throw Error(ws.documentSync.error);
     const state = notion.content.state(ws);
@@ -48,10 +53,34 @@ try {
         sections: Object.keys(state.doc.sections).length,
       }),
     );
-    if (process.argv.includes('--initialize')) {
-      ws = await notion.content.push(ws);
+    if (process.argv.includes('--initialize') || normalize) {
+      const canonical = (w) =>
+        Object.values(w.teams).map((t) => ({
+          team: t.id,
+          nodes: t.nodes
+            .map(({ notionBlockId, ...node }) => node)
+            .sort((a, b) => a.id.localeCompare(b.id)),
+          deck: t.deck,
+        }));
+      const before = canonical(ws);
+      ws = ws.documentSync?.pending
+        ? await notion.content.retry(ws)
+        : await notion.content.push(ws);
       if (ws.documentSync?.pending) throw Error(ws.documentSync.error);
-      console.log(JSON.stringify({ stage: 'initialize', synced: true }));
+      if (normalize) {
+        await notion.content.pull(ws, undefined, true);
+        store.put('workshops', ws.id, ws);
+        if (ws.documentSync?.error) throw Error(ws.documentSync.error);
+        if (!isDeepStrictEqual(before, canonical(ws)))
+          throw Error('移行後の本文・階層・ID・デッキが移行前と一致しません');
+        const doc = notion.content.state(ws).doc;
+        if (
+          doc.sections[1].roots.length !== Object.keys(ws.teams).length ||
+          notion.content.all({ sections: { 1: doc.sections[1] } }).some((b) => b.type !== 'toggle')
+        )
+          throw Error('チーム別トグルへの移行を確認できません');
+      }
+      console.log(JSON.stringify({ stage: normalize ? 'normalize' : 'initialize', synced: true }));
     }
     if (roundtrip) {
       const entry = Object.entries(ws.members).find(
@@ -81,8 +110,8 @@ try {
         marker = node.text.replace(/ 更新$/, '');
         const current = await notion.call(`blocks/${node.notionBlockId}`);
         if (
-          current.type !== 'heading_2' ||
-          current.heading_2.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
+          current.type !== 'toggle' ||
+          current.toggle.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
             node.text
         )
           throw Error('更新済みの一時トピックと一致しません');
@@ -97,12 +126,12 @@ try {
         });
         node = ws.teams[teamId].nodes.find((n) => n.text === marker);
         const created = await notion.call(`blocks/${node.notionBlockId}`);
-        if (created.type !== 'heading_2') throw Error('メイントピックの型が一致しません');
+        if (created.type !== 'toggle') throw Error('メイントピックの型が一致しません');
         console.log(JSON.stringify({ stage: 'create', verified: true }));
         ws = await act('node', { teamId, id: node.id, text: marker + ' 更新' });
         const updated = await notion.call(`blocks/${node.notionBlockId}`);
         if (
-          updated.heading_2.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
+          updated.toggle.rich_text.map((x) => x.plain_text || x.text?.content || '').join('') !==
           marker + ' 更新'
         )
           throw Error('文字更新を確認できません');
