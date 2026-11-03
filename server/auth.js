@@ -20,6 +20,7 @@ export class Auth {
   constructor(store, config, sendOtp) {
     this.store = store;
     this.config = config;
+    this.mailConfigured = !!sendOtp || !!(config.smtp.host && config.smtp.from);
     this.sendOtp =
       sendOtp ||
       (async (email, code) => {
@@ -47,6 +48,9 @@ export class Auth {
         });
       });
   }
+  emailOtpReady() {
+    return !this.config.demo && this.mailConfigured;
+  }
   user(req) {
     const token = /(?:^|;\s*)wid_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
     if (!token) throw new Fault(401, 'ログインしてください');
@@ -72,6 +76,16 @@ export class Auth {
     return { csrf };
   }
   async start(body, ip) {
+    requireThat(
+      !this.config.demo,
+      '現在は体験モードです。OTPメールは送信しません。ログイン画面の「管理者」「編集者」「閲覧者」から参加してください。',
+      503,
+    );
+    requireThat(
+      this.emailOtpReady(),
+      'OTPメールの送信設定がありません。管理者がメール送信元を設定してからご利用ください。',
+      503,
+    );
     const email = normalizeEmail(body.email);
     requireThat(
       email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),

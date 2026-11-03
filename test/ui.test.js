@@ -8,7 +8,7 @@ import { view } from '../server/domain.js';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-async function setup(t, role = '管理者') {
+async function setup(t, role = '管理者', loginState) {
   const errors = [],
     calls = [],
     admin = { email: 'admin@example.test', admin: role === '管理者' };
@@ -33,8 +33,11 @@ async function setup(t, role = '管理者') {
   Object.defineProperty(window, 'crypto', { value: webcrypto });
   window.fetch = async (path, options = {}) => {
     calls.push({ path, body: options.body && JSON.parse(options.body) });
+    if (loginState && path === '/api/me')
+      return { ok: false, status: 401, json: async () => ({ error: 'ログインしてください' }) };
     let data;
-    if (path === '/api/me')
+    if (path === '/api/health') data = loginState || { demo: false, auth: { emailOtpReady: true } };
+    else if (path === '/api/me')
       data = {
         email: admin.email,
         admin: admin.admin,
@@ -129,4 +132,18 @@ test('DOM: 管理者設定の各フォームとQR・AI未設定状態', async (t
   assert.equal(f.doc.querySelector('#ai-model').value, '');
   assert.equal(f.doc.querySelector('#ai-prompt').value, '');
   assert.equal(f.errors.length, 0);
+});
+
+test('DOM: 体験モードはメール認証フォームを隠し、参加ボタンを案内する', async (t) => {
+  const f = await setup(t, '管理者', { demo: true, auth: { emailOtpReady: false } });
+  assert.equal(f.doc.querySelector('#login-form').hidden, true);
+  assert.equal(f.doc.querySelector('#passkey-login').hidden, true);
+  assert.equal(f.doc.querySelectorAll('[data-demo]').length, 3);
+  assert.match(f.doc.querySelector('.login-foot').textContent, /OTPメールは送信されません/);
+});
+
+test('DOM: 通常モードでもメール送信が未設定なら理由を表示して無効化する', async (t) => {
+  const f = await setup(t, '管理者', { demo: false, auth: { emailOtpReady: false } });
+  assert.equal(f.doc.querySelector('#login-submit').disabled, true);
+  assert.match(f.doc.querySelector('#login-error').textContent, /送信設定がありません/);
 });

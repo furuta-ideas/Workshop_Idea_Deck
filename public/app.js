@@ -185,9 +185,16 @@ function login() {
   });
   api('/api/health')
     .then((h) => {
+      if (!$('#login-form')) return;
       if (h.demo) {
+        $('#login-form').hidden = true;
+        $('#passkey-login').hidden = true;
+        $('.login-form > p.muted').textContent =
+          '現在は体験モードです。下の参加ボタンを選んでください。メールアドレスや認証コードは不要です。';
+        $('.login-foot').textContent =
+          'OTPメールは送信されません。実際のメール認証には、送信元の接続設定が必要です。';
         $('#demo-area').innerHTML =
-          '<div class="demo-panel"><strong class="muted">ローカル体験モード</strong><p class="muted">本番認証・Notion・AI送信は無効です。</p><div class="row"><button data-demo="admin">管理者</button><button data-demo="editor">編集者</button><button data-demo="viewer">閲覧者</button></div></div>';
+          '<div class="demo-panel"><strong>体験モードで参加</strong><p class="muted">メールは送信しません。本番認証・Notion・AI送信は無効です。</p><div class="row"><button data-demo="admin">管理者</button><button data-demo="editor">編集者</button><button data-demo="viewer">閲覧者</button></div></div>';
         $$('[data-demo]').forEach(
           (b) =>
             (b.onclick = guarded(async () => {
@@ -195,6 +202,10 @@ function login() {
               await enter();
             })),
         );
+      } else if (!h.auth?.emailOtpReady) {
+        $('#login-submit').disabled = true;
+        $('#login-error').textContent =
+          'OTPメールの送信設定がありません。管理者がメール送信元を設定してからご利用ください。';
       }
     })
     .catch(() => {});

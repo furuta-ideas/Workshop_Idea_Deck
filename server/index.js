@@ -166,7 +166,12 @@ export function createApp(config = configuration(), overrides = {}) {
       const body = write ? await read(req) : {};
       const ip = req.socket.remoteAddress || 'unknown';
       if (path === '/api/health') {
-        json(res, { ok: true, name: 'アイディアワークショップ支援ツール', demo: config.demo });
+        json(res, {
+          ok: true,
+          name: 'アイディアワークショップ支援ツール',
+          demo: config.demo,
+          auth: { emailOtpReady: auth.emailOtpReady() },
+        });
         return;
       }
       if (path === '/api/auth/start' && req.method === 'POST') {
@@ -219,6 +224,7 @@ export function createApp(config = configuration(), overrides = {}) {
           admin: user.admin,
           csrf: user.session.csrf,
           demo: config.demo,
+          auth: { emailOtpReady: auth.emailOtpReady() },
           ai: ai.publicSettings(),
           notion: user.admin ? notion.status() : { enabled: notion.enabled() },
         });

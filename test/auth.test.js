@@ -168,3 +168,32 @@ test('WebAuthn: Origin・ユーザー検証・署名の不正は拒否', async (
   }
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
 });
+
+test('OTP: 体験モードでは登録済みでも送信・チャレンジ発行を行わない', async (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  store.put('users', 'admin@example.test', { id: id(), email: 'admin@example.test' });
+  let sent = 0;
+  const auth = new Auth(store, { demo: true, smtp: {} }, async () => {
+    sent++;
+  });
+  assert.equal(auth.emailOtpReady(), false);
+  await assert.rejects(
+    () => auth.start({ email: 'admin@example.test' }, 'test'),
+    (e) => e.status === 503 && e.message.includes('体験モード'),
+  );
+  assert.equal(sent, 0);
+  assert.equal(store.all('challenges').length, 0);
+});
+
+test('OTP: SMTP未設定は未知メールでも未設定と通知し、送信済みの案内に進まない', async (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const auth = new Auth(store, { demo: false, smtp: {} });
+  assert.equal(auth.emailOtpReady(), false);
+  await assert.rejects(
+    () => auth.start({ email: 'unknown@example.test' }, 'test'),
+    (e) => e.status === 503 && e.message.includes('送信設定がありません'),
+  );
+  assert.equal(store.all('challenges').length, 0);
+});
