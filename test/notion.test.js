@@ -207,3 +207,18 @@ test('ページ作成結果不明時は自動再送せず、二重作成を防�
   await assert.rejects(() => f.notion.publishNew(f.store.get('workshops', ws.id)));
   assert.equal(f.state.calls.length, count);
 });
+
+test('Notion接続状態は未設定・同期待ち・失敗・陳腐化・正常を区別し、公開状態へ詳細を出さない', async (t) => {
+  const f = fixture(t);
+  assert.equal(new Notion(f.store, {}).connectionState().state, 'unconfigured');
+  assert.equal(f.notion.connectionState().state, 'pending');
+  await f.notion.sync();
+  assert.equal(f.notion.connectionState().state, 'ready');
+  f.store.put('kv', 'notion-sync', { at: Date.now() - 61000, error: null });
+  assert.equal(f.notion.connectionState().state, 'stale');
+  f.store.put('kv', 'notion-sync', { at: Date.now(), error: 'private detail' });
+  const state = f.notion.connectionState();
+  assert.equal(state.state, 'error');
+  assert.equal(state.error, undefined);
+  assert.equal(state.workshops, undefined);
+});

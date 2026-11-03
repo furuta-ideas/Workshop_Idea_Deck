@@ -224,7 +224,7 @@ function render() {
           `<button data-team="${esc(t.id)}" class="${t.id === teamId ? 'active' : ''}"><span><i class="team-dot"></i>${esc(t.name)}</span><span>${t.id === ws.myTeam ? '参加中' : '↗'}</span></button>`,
       )
       .join('') || '<p class="muted">チーム設定をお待ちください</p>'
-  }</div></div><div class="sidebar-foot"><span class="connection">● ${me.demo ? 'ローカル保存' : me.notion.enabled ? 'Notion連携あり' : 'サーバー保存'}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.3</div></aside><main class="main">${ws ? `<div class="page-top"><div><div class="eyebrow">WORKSHOP / ${esc(t?.name || 'チーム未設定')}</div><h1>${titles[tab]}</h1><p>${subtitles[tab]}</p><div class="ws-meta"><span class="pill">${esc(ws.status)}</span><span>${esc(ws.role)}</span>${ws.endDate ? `<span>期限 ${esc(ws.endDate)}</span>` : ''}</div></div><div class="row"><span class="eyebrow">STEP 0${tab + 1} / 04</span></div></div><nav class="tabbar" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section><div class="footer-note"><span>● 入力内容はサーバーへ保存され、チームで共有されます</span><span>AI提案はプレビュー後に適用 · 自動フォールバックなし</span></div>` : `<div class="center-empty"><div class="eyebrow">YOUR NEXT WORKSHOP</div><h1>新しい可能性を、ここから。</h1><p class="muted">表示可能なワークショップがありません。<br>参加登録・Notionの状態・同期結果を管理者に確認してください。</p>${me.admin ? '<button id="create-first" class="primary">＋ ワークショップを作成</button>' : ''}</div>`}</main></div>`;
+  }</div></div><div class="sidebar-foot"><span class="connection">● ${connectionLabel()}</span><br>ひとりの視点を、みんなの可能性に。<br>Workshop Idea Deck · v0.3</div></aside><main class="main">${ws ? `<div class="page-top"><div><div class="eyebrow">WORKSHOP / ${esc(t?.name || 'チーム未設定')}</div><h1>${titles[tab]}</h1><p>${subtitles[tab]}</p><div class="ws-meta"><span class="pill">${esc(ws.status)}</span><span>${esc(ws.role)}</span>${ws.endDate ? `<span>期限 ${esc(ws.endDate)}</span>` : ''}</div></div><div class="row"><span class="eyebrow">STEP 0${tab + 1} / 04</span></div></div><nav class="tabbar" aria-label="ワークショップのステップ" role="tablist">${titles.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" data-tab="${i}" role="tab" aria-selected="${i === tab}" aria-controls="step-content"><span class="step">${i + 1}</span>${s}</button>`).join('')}</nav>${!writable() ? '<div class="notice meta-badges">閲覧モードです。進行中のワークショップで編集権限があるときに操作できます。</div>' : ''}${ws.notion?.error ? `<div class="warning meta-badges">${esc(ws.notion.error)}</div>` : ''}${ws.notion?.conflict ? '<div class="warning meta-badges">Notionとの更新競合があります。管理者設定から解決してください。</div>' : ''}<div id="sync-banner"></div><section id="step-content" role="tabpanel">${t || tab === 3 ? stepContent() : '<div class="empty"><strong>チームの設定をお待ちください</strong>管理者設定からグループを作成・割当できます。</div>'}</section><div class="footer-note"><span>● 入力内容はサーバーへ保存され、チームで共有されます</span><span>AI提案はプレビュー後に適用 · 自動フォールバックなし</span></div>` : emptyWorkshopView()}</main></div>`;
   $('#account').onclick = accountDialog;
   $('#logout').onclick = guarded(async () => {
     stopRecording();
@@ -280,6 +280,43 @@ function render() {
   }
   showPending();
   updateClocks();
+}
+function emptyWorkshopView() {
+  const state = me.notion.state || (me.notion.enabled ? 'pending' : 'unconfigured');
+  const copy = me.demo
+    ? ['ワークショップを作成しましょう', '現在はローカル体験モードです。']
+    : state === 'unconfigured'
+      ? [
+          'Notion連携が未設定です',
+          'ワークショップ一覧と参加者の権限を、まだ読み込めていません。管理者によるNotion接続設定が必要です。',
+        ]
+      : state === 'pending'
+        ? [
+            'Notionと同期しています',
+            'ワークショップ一覧と参加者の権限を確認しています。接続後は自動で表示を更新します。',
+          ]
+        : ['error', 'stale'].includes(state)
+          ? [
+              'Notionの接続を確認してください',
+              '一覧と権限を再確認できません。接続設定・ページの共有権限・同期結果を管理者に確認してください。',
+            ]
+          : [
+              '表示可能なワークショップがありません',
+              '参加登録・ワークショップの状態・期限を管理者に確認してください。',
+            ];
+  return `<div class="center-empty"><div class="eyebrow">YOUR WORKSHOPS</div><h1>${copy[0]}</h1><p class="muted">${copy[1]}</p><p class="muted">一覧と権限は自動で再確認します。</p>${me.admin ? '<button id="create-first" class="primary">＋ ワークショップを作成</button>' : ''}</div>`;
+}
+function connectionLabel() {
+  if (me.demo) return 'ローカル体験モード';
+  return (
+    {
+      unconfigured: 'Notion未接続',
+      pending: 'Notion同期待ち',
+      error: 'Notion同期エラー',
+      stale: 'Notion再確認待ち',
+      ready: 'Notion連携中',
+    }[me.notion.state] || (me.notion.enabled ? 'Notion連携あり' : 'Notion未接続')
+  );
 }
 function stepContent() {
   if (tab === 0) return mapView();
@@ -831,11 +868,28 @@ function showPending() {
     };
 }
 async function poll() {
-  if (!me || !ws || polling || modal.open || recording) return;
+  if (!me || polling || modal.open || recording) return;
   polling = true;
   try {
+    const [latestMe, latestList] = await Promise.all([api('/api/me'), api('/api/workshops')]);
+    const roleChanged = latestMe.admin !== me.admin;
+    const stateChanged = latestMe.notion.state !== me.notion.state;
+    const listChanged = JSON.stringify(latestList) !== JSON.stringify(workshops);
+    me = latestMe;
+    workshops = latestList;
+    if (!ws || roleChanged || !workshops.some((w) => w.id === ws.id)) {
+      const next =
+        workshops.find((w) => w.id === ws?.id) || workshops.find((w) => !w.deleted) || workshops[0];
+      if (next) await loadWorkshop(next.id);
+      else {
+        remember();
+        ws = null;
+        if (roleChanged || stateChanged || listChanged) render();
+      }
+      return;
+    }
     const latest = await api(`/api/workshops/${ws.id}`);
-    if (latest.revision !== ws.revision) {
+    if (latest.revision !== ws.revision || stateChanged || listChanged) {
       if (editing) {
         pending = latest;
         showPending();
@@ -852,6 +906,7 @@ async function poll() {
         const next = workshops.find((w) => !w.deleted);
         if (next) await loadWorkshop(next.id);
         else {
+          remember();
           ws = null;
           render();
         }

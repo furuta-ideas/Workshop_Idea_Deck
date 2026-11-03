@@ -8,7 +8,7 @@ import { view } from '../server/domain.js';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-async function setup(t, role = '管理者', loginState) {
+async function setup(t, role = '管理者', loginState, viewState = {}) {
   const errors = [],
     calls = [],
     admin = { email: 'admin@example.test', admin: role === '管理者' };
@@ -23,6 +23,16 @@ async function setup(t, role = '管理者', loginState) {
     virtualConsole: new VirtualConsole().on('jsdomError', (e) => errors.push(e)),
   });
   const { window } = dom;
+  const state = {
+    admin: admin.admin,
+    available: true,
+    notion: { enabled: false, state: 'unconfigured' },
+    ...viewState,
+  };
+  window.setInterval = (fn, milliseconds) => {
+    if (milliseconds === 3000) state.poll = fn;
+    return 1;
+  };
   t.after(() => window.close());
   window.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
@@ -40,14 +50,15 @@ async function setup(t, role = '管理者', loginState) {
     else if (path === '/api/me')
       data = {
         email: admin.email,
-        admin: admin.admin,
+        admin: state.admin,
         csrf: 'test',
         demo: false,
         ai: { provider: 'genspark-enterprise', model: '', imagePrompt: '', approved: [] },
-        notion: { enabled: false },
+        notion: state.notion,
       };
-    else if (path === '/api/workshops') data = [{ id: ws.id, name: ws.name, status: ws.status }];
-    else if (path === `/api/workshops/${ws.id}`) data = view(ws, admin);
+    else if (path === '/api/workshops')
+      data = state.available ? [{ id: ws.id, name: ws.name, status: ws.status }] : [];
+    else if (path === `/api/workshops/${ws.id}`) data = view(ws, { ...admin, admin: state.admin });
     else if (path.endsWith('/action')) {
       const body = JSON.parse(options.body);
       if (body.action === 'node')
@@ -66,7 +77,7 @@ async function setup(t, role = '管理者', loginState) {
   };
   window.eval(script);
   await settle();
-  return { dom, window, doc: window.document, calls, errors, ws, team };
+  return { dom, window, doc: window.document, calls, errors, ws, team, state };
 }
 const settle = () => new Promise((r) => setTimeout(r, 40));
 const click = (f, selector) => {
@@ -146,4 +157,21 @@ test('DOM: 通常モードでもメール送信が未設定なら理由を表示
   const f = await setup(t, '管理者', { demo: false, auth: { emailOtpReady: false } });
   assert.equal(f.doc.querySelector('#login-submit').disabled, true);
   assert.match(f.doc.querySelector('#login-error').textContent, /送信設定がありません/);
+});
+
+test('DOM: Notion未接続と同期失敗を明示し、同期後は空一覧と管理者権限を自動更新', async (t) => {
+  const f = await setup(t, '閲覧者', undefined, { available: false });
+  assert.match(f.doc.querySelector('.center-empty').textContent, /Notion連携が未設定/);
+  assert.equal(f.doc.querySelector('#settings'), null);
+  f.state.notion = { enabled: true, state: 'error' };
+  await f.state.poll();
+  assert.match(f.doc.querySelector('.center-empty').textContent, /Notionの接続を確認/);
+  f.state.notion = { enabled: true, state: 'ready' };
+  f.state.admin = true;
+  f.state.available = true;
+  await f.state.poll();
+  assert.ok(f.doc.querySelector('#settings'));
+  assert.ok(f.doc.querySelector('.map-root'));
+  assert.equal(f.doc.querySelectorAll('#workshop-select option').length, 1);
+  assert.equal(f.errors.length, 0);
 });

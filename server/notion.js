@@ -294,7 +294,7 @@ export class Notion {
   }
   status() {
     return {
-      enabled: this.enabled(),
+      ...this.connectionState(),
       ...(this.store.get('kv', 'notion-sync') || {}),
       workshops: this.store
         .all('workshops')
@@ -306,6 +306,19 @@ export class Notion {
           dirty: w.dirty,
         })),
     };
+  }
+  connectionState() {
+    if (!this.enabled()) return { enabled: false, state: 'unconfigured' };
+    const sync = this.store.get('kv', 'notion-sync');
+    if (!sync) return { enabled: true, state: 'pending' };
+    const workshops = this.store.all('workshops').filter((w) => w.notion);
+    const state =
+      sync.error || workshops.some((w) => w.notion.error || w.notion.conflict)
+        ? 'error'
+        : Date.now() - sync.at >= 60000
+          ? 'stale'
+          : 'ready';
+    return { enabled: true, state, at: sync.at };
   }
   async resolve(wsId, choice) {
     const ws = this.store.get('workshops', wsId);

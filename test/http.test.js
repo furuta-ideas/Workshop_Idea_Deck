@@ -356,3 +356,36 @@ test('HTTP: AI提案は確認前に変更せず、16:9画像の適用・④投�
   assert.equal(image.status, 200);
   assert.equal(image.headers.get('content-type'), 'image/png');
 });
+
+test('HTTP: 既存セッションの管理者権限はNotionの最新メンバーから再計算し、陳腐化時は剥奪', async (t) => {
+  const f = await setup(t);
+  const email = 'member@example.test';
+  f.app.store.put('users', email, { id: id(), email, admin: false, passkeys: [] });
+  const session = await f.login(email);
+  assert.equal((await f.req('/api/me', undefined, session)).body.admin, false);
+  assert.equal((await f.req('/api/workshops', undefined, session)).body.length, 0);
+  const ws = newWorkshop('同期されたワークショップ', 'admin@example.test');
+  ws.notion = { pageId: 'fixture-page', checkedAt: Date.now() };
+  ws.members[email] = { role: '管理者', teamId: Object.keys(ws.teams)[0] };
+  f.app.store.put('workshops', ws.id, ws);
+  assert.equal((await f.req('/api/me', undefined, session)).body.admin, true);
+  assert.equal((await f.req('/api/workshops', undefined, session)).body.length, 1);
+  assert.equal(f.app.store.get('users', email).admin, false);
+  ws.notion.checkedAt = 0;
+  f.app.store.put('workshops', ws.id, ws);
+  assert.equal((await f.req('/api/me', undefined, session)).body.admin, false);
+  assert.equal((await f.req('/api/workshops', undefined, session)).body.length, 0);
+});
+
+test('HTTP: Notion障害中も登録済み利用者のOTP認証は可能だが、古いWS権限は使えない', async (t) => {
+  const f = await setup(t);
+  Object.assign(f.app.notion.config, {
+    notionToken: 'fixture-token',
+    notionSource: 'fixture-source',
+  });
+  f.app.notion.transport = async () => ({ ok: false, status: 503 });
+  const session = await f.login('admin@example.test');
+  const me = await f.req('/api/me', undefined, session);
+  assert.equal(me.status, 200);
+  assert.equal(me.body.notion.state, 'error');
+});

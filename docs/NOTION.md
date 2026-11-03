@@ -11,6 +11,23 @@
 
 この実装のHTTPは `https://api.notion.com/v1`、`Notion-Version: 2025-09-03` に固定しています。サーバーのみから呼び出します。[Notion API](https://developers.notion.com/reference/intro)、[DB作成](https://developers.notion.com/reference/create-a-database)、[データソース作成](https://developers.notion.com/reference/create-a-data-source)、[File Upload](https://developers.notion.com/reference/file-upload)
 
+### 内部接続の作成とトークン入力
+
+1. [NotionのDeveloper portal](https://app.notion.com/developers/connections)を開き、「Internal connections」から新しい内部接続を作成します。接続名は `アイディアワークショップ支援ツール`、対象はWS一覧を持つワークスペースです。ワークスペースオーナーによる操作が必要です。
+2. 内容の読取り・更新・挿入を許可します。参加者メールはDBのtitle欄から読むため、Notionの全ユーザー情報を取得する権限は不要です。
+3. 「Content access」でWS一覧の親ページを指定するか、親ページの「…」→「接続」→「接続を追加」で、この内部接続を選びます。必要なWSページと子参加者DBへのアクセスを確認します。
+4. 「Configuration」でAPIトークンを取得し、ローカルの `.env` の `NOTION_TOKEN=` に保存します。チャットや公開リポジトリへ貼り付けません。非表示入力を使う場合は、リポジトリのPowerShellで `& .\scripts\set-notion-token.ps1` を実行します。
+
+読取りだけで接続を確認するコマンド：
+
+```sh
+node --env-file=.env scripts/check-notion.js
+```
+
+このコマンドはWS一覧と各子参加者DBのスキーマ／読取りを調べ、一時的なメモリーDBだけを使います。Notionへ書き込まず、稼働DBの権限も変更しません。接続確認後に通常サーバーを再起動すると同期が始まります。内部接続を作成しただけではページへのアクセスがなく、親ページの共有操作も必要です。[Notion公式：内部接続](https://developers.notion.com/guides/connections-and-tokens/internal-connections)
+
+一覧が空で設定歯車がない場合は、Notion上の参加者権限をまだ読めていない可能性があります。公開Webへの移動だけでは接続資格情報の欠落は解消しません。アプリは未接続・同期待ち・同期失敗を区別して表示し、接続回復後はログイン中でも一覧と管理者属性を再取得します。未接続状態を固定の管理者権限やチャットの接続結果で代用しません。
+
 ## WS一覧のスキーマ
 
 | プロパティ名 | 型     | 値                                                 |

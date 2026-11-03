@@ -176,7 +176,15 @@ export function createApp(config = configuration(), overrides = {}) {
       }
       if (path === '/api/auth/start' && req.method === 'POST') {
         rateLimit(store, `login-start:${ip}`, 20, 600000);
-        if (notion.enabled() && !remoteWrite) await notion.sync();
+        if (notion.enabled() && !remoteWrite) {
+          // Verify mailbox ownership even during a Notion outage. Workshop access
+          // still requires fresh membership data and fails closed in access().
+          try {
+            await notion.sync();
+          } catch {
+            /* Persisted sync state is shown after login. */
+          }
+        }
         json(res, await auth.start(body, ip));
         return;
       }
@@ -226,7 +234,7 @@ export function createApp(config = configuration(), overrides = {}) {
           demo: config.demo,
           auth: { emailOtpReady: auth.emailOtpReady() },
           ai: ai.publicSettings(),
-          notion: user.admin ? notion.status() : { enabled: notion.enabled() },
+          notion: user.admin ? notion.status() : notion.connectionState(),
         });
         return;
       }
