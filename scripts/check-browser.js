@@ -1,6 +1,6 @@
 // Isolated real Edge mouse/keyboard regression. No production data, SMTP or Notion connection.
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { createApp, configuration } from '../server/index.js';
@@ -26,6 +26,33 @@ const config = configuration({ PORT: '0' }),
   document = readFileSync(new URL('../config/ai-facilitator.md', import.meta.url), 'utf8');
 config.facilitatorDocument = document;
 const app = createApp(config, { store, sendOtp: async () => {} });
+store.put('kv', 'genspark-credential', { key: 'gsk_browser_fixture_only' });
+store.put('kv', 'ai', { provider: 'genspark-gsk', model: 'fixture-model' });
+const aiInputs = [];
+app.ai.genspark.run = async (task, input) => {
+  aiInputs.push({ task, input });
+  if (task === 'transcribe') {
+    const bytes = Buffer.from(input.audio, 'base64');
+    assert.equal(input.mimeType, 'audio/wav');
+    assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
+    assert.equal(bytes.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(bytes.readUInt32LE(24), 16000);
+    assert.ok(bytes.length > 16000, 'Audio must contain actual captured samples');
+    return { text: 'テストテスト、音声のテストです。' };
+  }
+  return {
+    should_speak: true,
+    message_id: 'fixture-' + aiInputs.length,
+    phase: input.phase,
+    message_type: input.question ? 'help_answer' : 'perspective_shift',
+    robot_animation: 'speaking',
+    bubble_text: input.question
+      ? 'リーフィーです。まずは身近な人と体験会を開いてみませんか？'
+      : '誰に役立つか考えてみましょう。',
+    duration_ms: 10000,
+    reason_code: 'FIXTURE',
+  };
+};
 const addr = await app.start();
 config.origin = `http://127.0.0.1:${addr.port}`;
 let cookie;
@@ -36,6 +63,24 @@ app.auth.session(email, {
 });
 const profile = resolve('test-results/edge-interactions-' + Date.now());
 mkdirSync(profile, { recursive: true });
+const fakeMic = resolve(profile, 'fake-mic.wav'),
+  samples = 16000 * 4,
+  wav = Buffer.alloc(44 + samples * 2);
+wav.write('RIFF');
+wav.writeUInt32LE(wav.length - 8, 4);
+wav.write('WAVEfmt ', 8);
+wav.writeUInt32LE(16, 16);
+wav.writeUInt16LE(1, 20);
+wav.writeUInt16LE(1, 22);
+wav.writeUInt32LE(16000, 24);
+wav.writeUInt32LE(32000, 28);
+wav.writeUInt16LE(2, 32);
+wav.writeUInt16LE(16, 34);
+wav.write('data', 36);
+wav.writeUInt32LE(samples * 2, 40);
+for (let i = 0; i < samples; i++)
+  wav.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / 16000) * 8000), 44 + i * 2);
+writeFileSync(fakeMic, wav);
 const edge = spawn(
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   [
@@ -43,6 +88,9 @@ const edge = spawn(
     '--disable-gpu',
     '--no-first-run',
     '--no-default-browser-check',
+    '--use-fake-ui-for-media-stream',
+    '--use-fake-device-for-media-stream',
+    '--use-file-for-fake-audio-capture=' + fakeMic,
     '--remote-debugging-port=4345',
     '--remote-allow-origins=http://localhost:4345',
     '--window-size=1600,1050',
@@ -266,6 +314,37 @@ try {
     ),
   );
   assert.deepEqual(errors, []);
+  await click('#next-advice');
+  await until("!!document.querySelector('#advice-question')");
+  await click('[data-chat-character="leafy"]');
+  await click('#advice-question');
+  await send('Input.insertText', { text: 'この企画の最初の一歩を教えてください' });
+  await click('#advice-chat-form button.primary');
+  await until("document.querySelector('#chat-log').textContent.includes('体験会')");
+  const chat = aiInputs.filter((x) => x.input.question).at(-1);
+  assert.equal(chat.input.screen.discussion.headline, '新しい価値');
+  assert.equal(chat.input.character, 'leafy');
+  assert.equal(
+    await evaluate(
+      "[...document.querySelectorAll('.character-picker img')].every(i=>i.complete && i.naturalWidth>0)",
+    ),
+    true,
+  );
+  await send('Page.captureScreenshot', { format: 'png' }).then((r) =>
+    writeFileSync('test-results/browser-chat-v013.png', Buffer.from(r.data, 'base64')),
+  );
+  await click('#modal-close');
+  await click('#record-discussion');
+  await until("!!document.querySelector('#recording-level')");
+  await sleep(1700);
+  await click('#record-discussion');
+  await until("document.querySelector('#transcript').value.includes('音声のテストです')");
+  assert.ok(aiInputs.some((x) => x.task === 'transcribe'));
+  assert.equal(store.get('workshops', w.id).teams[team.id].discussion.transcript, '');
+  assert.deepEqual(errors, []);
+  console.log(
+    'Real Edge: character chat + screen context + fake microphone capture → 16kHz WAV → transcript draft: PASS (Genspark response mocked)',
+  );
   console.log(
     'Real Edge mouse: up/down drag, removed Alt shortcuts, editor voting in tabs 1/2, shortlist→deck drag, new discussion fields: PASS',
   );

@@ -7,6 +7,10 @@ import { DurableDatabase } from './database.js';
 import defaultDocument from '../config/ai-facilitator.md';
 import { mailTransport } from '../server/mail.js';
 import { scheduleAlarm } from './scheduling.js';
+import { syncDue, syncAt } from '../server/notion-content.js';
+
+// Keep polling Notion for this long after the last request from a browser.
+const ACTIVE_WINDOW_MS = 10 * 60 * 1000;
 
 const assetPaths = new Set([
   '/',
@@ -38,13 +42,17 @@ export class WorkshopState extends DurableObject {
     this.http = httpServerHandler(this.app.server);
     this.env = env;
   }
+  // Poll Notion only while someone is using the app. An always-on 30 second
+  // poll costs ~2,900 wake-ups a day even when nobody is connected.
+  active(now = Date.now()) {
+    return now - (this.lastActivityAt || 0) < ACTIVE_WINDOW_MS;
+  }
   async nextAlarm() {
     const status = this.store.get('kv', 'cloud-maintenance') || { at: 0 };
-    let next = status.at + this.app.notion.config.pollSeconds * 1000;
+    let next = this.active() ? status.at + this.app.notion.config.pollSeconds * 1000 : Infinity;
     for (const ws of this.store.all('workshops'))
-      if (ws.documentSync?.queued && !ws.documentSync.error)
-        next = Math.min(next, ws.documentSync.dueAt);
-    await scheduleAlarm(this.ctx.storage, next);
+      if (syncDue(ws.documentSync)) next = Math.min(next, syncAt(ws.documentSync));
+    if (Number.isFinite(next)) await scheduleAlarm(this.ctx.storage, next);
   }
   async alarm() {
     if (this.env.MIGRATION_TOKEN) return;
@@ -52,7 +60,7 @@ export class WorkshopState extends DurableObject {
     const job = this.app.flushPending();
     if (job) tasks.push(job);
     const previous = this.store.get('kv', 'cloud-maintenance') || { at: 0 };
-    if (Date.now() - previous.at >= this.app.notion.config.pollSeconds * 1000)
+    if (this.active() && Date.now() - previous.at >= this.app.notion.config.pollSeconds * 1000)
       tasks.push(
         Promise.resolve(this.app.maintain()).then(() => {
           this.store.put('kv', 'cloud-maintenance', { at: Date.now() });
@@ -168,6 +176,7 @@ export class WorkshopState extends DurableObject {
         { error: '公開用データを準備しています。しばらくお待ちください。' },
         { status: 503 },
       );
+    if (new URL(request.url).pathname !== '/api/health') this.lastActivityAt = Date.now();
     const response = await this.http.fetch(request, this.env, this.ctx);
     // Before operator bootstrap, health requests must not trigger a Notion import.
     if (!this.env.MIGRATION_TOKEN) await this.nextAlarm();
@@ -179,7 +188,11 @@ export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (!path.startsWith('/api/')) {
-      if (!assetPaths.has(path) || !['GET', 'HEAD'].includes(request.method))
+      if (
+        (!assetPaths.has(path) &&
+          !/^\/characters\/(kashi|leafy)-(idle|thinking|speaking|insight)\.png$/.test(path)) ||
+        !['GET', 'HEAD'].includes(request.method)
+      )
         return new Response('Not found', { status: 404 });
       const response = await env.ASSETS.fetch(request);
       const headers = new Headers(response.headers);

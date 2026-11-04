@@ -43,7 +43,8 @@ test('編集者は自チームから①②の投票を開始・加算・取消�
   assert.equal(w.votes.cards[f.editor.email][target], 1);
   w = f.act(f.editor, 'vote', { phase: 'cards', target, delta: -1 });
   assert.equal(w.votes.cards[f.editor.email][target], 0);
-  assert.throws(() => f.act(f.editor, 'timer', { phase: 'cards', teamId: f.other.id }));
+  // v0.19: no team assignment; an editor may work in any team.
+  f.act(f.editor, 'timer', { phase: 'cards', teamId: f.other.id });
   assert.throws(() => f.act(f.viewer, 'timer', { phase: 'cards', teamId: f.team.id }));
   assert.throws(() => f.act(f.editor, 'timer', { phase: 'ideas', teamId: f.team.id }));
 });
@@ -79,10 +80,9 @@ test('閲覧者は全てのデータ変更を拒否、他チームの編集も�
       () => f.act(f.viewer, action, { teamId: f.team.id }),
       (e) => e.status === 403,
     );
-  assert.throws(
-    () => f.act(f.editor, 'node', { teamId: f.other.id, text: '越境' }),
-    (e) => e.status === 403,
-  );
+  // v0.19: an editor may edit any team.
+  const crossed = f.act(f.editor, 'node', { teamId: f.other.id, text: 'どの班でも編集' });
+  assert.ok(crossed.teams[f.other.id].nodes.some((n) => n.text === 'どの班でも編集'));
   assert.throws(
     () => f.act(f.editor, 'settings', {}),
     (e) => e.status === 403,
@@ -126,7 +126,7 @@ test('マップ貼付け: 不正入力・他班・閲覧者・上限超過を原
   const before = JSON.stringify(f.store.get('workshops', f.ws.id));
   for (const [user, p] of [
     [f.viewer, payload],
-    [f.editor, { ...payload, teamId: f.other.id }],
+    [f.editor, { ...payload, teamId: 'missing-team' }],
     [f.editor, { ...payload, text: '親\n' + ' '.repeat(3) + '子\n 孫' }],
     [f.editor, { ...payload, text: 'a\n'.repeat(500) }],
     [f.editor, { ...payload, anchorId: 'missing' }],
@@ -261,10 +261,7 @@ test('議論の再開と履歴、文字数制約、個人別投票の非公開',
   const isolated = view(ws, f.editor);
   assert.equal(isolated.teams[f.other.id].nodes[0].text, '他チームの下書き');
   assert.equal(isolated.teams[f.other.id].discussion.transcript, '他チームの生の議論');
-  assert.throws(
-    () => f.act(f.admin, 'node', { teamId: f.other.id, text: '越境' }),
-    (e) => e.status === 403,
-  );
+  assert.ok(f.act(f.admin, 'node', { teamId: f.other.id, text: 'どの班でも編集' }));
 });
 test('自チーム画像へ複数投票でき、参加者取り消しにも予算を適用', (t) => {
   const f = setup(t),
@@ -478,7 +475,7 @@ test('マップ取消: 他者のマップ更新を巻き戻さず、閲覧者・
   );
   assert.throws(
     () => f.act(f.editor, 'undoMap', { teamId: f.other.id }),
-    (e) => e.status === 403,
+    /取り消せるマップ操作がありません/,
   );
   assert.equal(JSON.stringify(f.store.get('workshops', f.ws.id)), before);
 });
@@ -498,4 +495,46 @@ test('マップ取消: 削除後に振り直した票と競合する復元は全
   assert.equal(JSON.stringify(f.store.get('workshops', w.id)), before);
   for (let i = 0; i < 5; i++) f.act(f.editor, 'vote', { phase: 'cards', target: b.id, delta: -1 });
   assert.ok(f.act(f.editor, 'undoMap', { teamId }).teams[teamId].nodes.some((n) => n.id === a.id));
+});
+
+test('③の文字サイズは管理者だけが決められた段階から設定できる', (t) => {
+  const f = setup(t);
+  const w = f.act(f.admin, 'settings', { textScale: 130 });
+  assert.equal(w.textScale, 130);
+  assert.throws(() => f.act(f.admin, 'settings', { textScale: 999 }), /文字サイズ/);
+  assert.throws(() => f.act(f.editor, 'settings', { textScale: 100 }), /管理者/);
+});
+
+test('③デッキのリフレッシュ: 今のデッキを＃1として保存して空にし、＃1へ戻すと＃2も残る', (t) => {
+  const f = setup(t),
+    ids = f.team.nodes.map((n) => n.id);
+  f.act(f.admin, 'timer', { phase: 'cards' });
+  for (const target of ids.slice(0, 3)) f.act(f.editor, 'vote', { phase: 'cards', target, delta: 1 });
+  f.act(f.editor, 'deck', { teamId: f.team.id, ids: ids.slice(0, 2) });
+  // Unsent edits arrive with the refresh and stay with deck #1.
+  let w = f.act(f.editor, 'clearIdea', { teamId: f.team.id, headline: '最初の案', transcript: '議論1' });
+  let tm = w.teams[f.team.id];
+  assert.equal(tm.ideas.length, 1);
+  assert.deepEqual(tm.ideas[0].deck, ids.slice(0, 2));
+  assert.equal(tm.ideas[0].discussion.headline, '最初の案');
+  assert.deepEqual(tm.deck, []);
+  assert.equal(tm.discussion.headline, '');
+  // The ① voice log belongs to the team: a new deck keeps it.
+  assert.equal(tm.discussion.transcript, '議論1');
+  assert.equal(tm.activeIdeaId, null);
+  // Deck #2 with only cards is still kept when switching back to #1.
+  f.act(f.editor, 'deck', { teamId: f.team.id, ids: [ids[2]] });
+  w = f.act(f.editor, 'restoreIdea', { teamId: f.team.id, ideaId: tm.ideas[0].id, headline: '二つ目' });
+  tm = w.teams[f.team.id];
+  assert.equal(tm.ideas.length, 2);
+  assert.deepEqual(tm.ideas[1].deck, [ids[2]]);
+  assert.equal(tm.ideas[1].discussion.headline, '二つ目');
+  assert.equal(tm.activeIdeaId, tm.ideas[0].id);
+  assert.deepEqual(tm.deck, ids.slice(0, 2));
+  assert.equal(tm.discussion.headline, '最初の案');
+  // An empty refresh does not add an empty deck.
+  w = f.act(f.editor, 'clearIdea', { teamId: f.team.id });
+  w = f.act(f.editor, 'clearIdea', { teamId: f.team.id });
+  assert.equal(w.teams[f.team.id].ideas.length, 2);
+  assert.throws(() => f.act(f.viewer, 'clearIdea', { teamId: f.team.id }));
 });

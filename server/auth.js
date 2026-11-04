@@ -9,13 +9,19 @@ import {
 import { id, hash, normalizeEmail, checkPassword, passwordHash } from './store.js';
 import { Fault, requireThat } from './domain.js';
 
-export function rateLimit(store, key, limit, windowMs) {
+// memory: true keeps the counter in process memory. Use it for frequent,
+// low-risk calls (AI hints every few seconds) so each call is not a storage write.
+export function rateLimit(store, key, limit, windowMs, { memory = false } = {}) {
   const now = Date.now();
-  const old = store.get('kv', `limit:${key}`);
+  store.limits ||= new Map();
+  const old = memory ? store.limits.get(key) : store.get('kv', `limit:${key}`);
   const value = old && old.until > now ? old : { count: 0, until: now + windowMs };
   requireThat(value.count++ < limit, 'しばらく待ってからお試しください', 429);
-  store.put('kv', `limit:${key}`, value);
+  if (memory) store.limits.set(key, value);
+  else store.put('kv', `limit:${key}`, value);
 }
+// How long one OTP login is trusted on the same browser (and how long a session lasts).
+export const TRUST_MS = 24 * 3600000;
 export class Auth {
   constructor(store, config, sendOtp) {
     this.store = store;
@@ -52,20 +58,33 @@ export class Auth {
     requireThat(user && !user.disabled, 'アカウントが無効です', 401);
     return { ...user, session };
   }
-  session(email, res) {
+  // A session lasts until `expires` (24 hours by default). With `trust`, the browser also
+  // gets a cookie that lets the same email log in again without an OTP until then.
+  session(email, res, { expires = Date.now() + TRUST_MS, trust = false } = {}) {
     const token = randomBytes(32).toString('base64url'),
-      csrf = randomBytes(24).toString('base64url');
+      csrf = randomBytes(24).toString('base64url'),
+      secure = this.config.secure ? '; Secure' : '',
+      maxAge = Math.max(0, Math.floor((expires - Date.now()) / 1000));
     this.store.db
       .prepare('INSERT INTO sessions(token,email,expires,csrf) VALUES(?,?,?,?)')
-      .run(hash(token), email, Date.now() + 12 * 3600000, csrf);
-    res.setHeader(
-      'Set-Cookie',
-      `wid_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${this.config.secure ? '; Secure' : ''}`,
-    );
-    this.store.audit('login', { user: hash(email) });
+      .run(hash(token), email, expires, csrf);
+    const cookies = [`wid_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`];
+    if (trust) {
+      const pass = randomBytes(32).toString('base64url');
+      this.store.put('challenges', hash(pass), { type: 'otp-trust', email, expires });
+      cookies.push(`wid_trust=${pass}; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`);
+    }
+    res.setHeader('Set-Cookie', cookies.length > 1 ? cookies : cookies[0]);
+    this.store.audit('login', { user: hash(email), otp: trust });
     return { csrf };
   }
-  async start(body, ip) {
+  // The OTP pass this browser holds for `email`, if it is still within its 24 hours.
+  trusted(req, email) {
+    const pass = /(?:^|;\s*)wid_trust=([^;]+)/.exec(req?.headers?.cookie || '')?.[1];
+    const c = pass && this.store.get('challenges', hash(pass));
+    return c?.type === 'otp-trust' && c.email === email && c.expires > Date.now() ? c : null;
+  }
+  async start(body, ip, req, res) {
     requireThat(
       !this.config.demo,
       '現在は体験モードです。OTPメールは送信しません。ログイン画面の「管理者」「編集者」「閲覧者」から参加してください。',
@@ -92,6 +111,9 @@ export class Auth {
       (!user.password ||
         invitation ||
         checkPassword(String(body.password || '').slice(0, 1024), user.password));
+    // Within 24 hours of an OTP login on this browser, the same email logs in directly.
+    const pass = allowed && res && this.trusted(req, email);
+    if (pass) return { ...this.session(email, res, { expires: pass.expires }), trusted: true };
     const challenge = id();
     if (allowed) {
       const code = String(randomInt(100000, 1000000));
@@ -128,7 +150,7 @@ export class Auth {
     );
     this.store.del('challenges', body.challenge);
     requireThat(!this.store.get('users', c.email)?.disabled, 'アカウントが無効です', 401);
-    return this.session(c.email, res);
+    return this.session(c.email, res, { trust: true });
   }
   async options(kind, user, body, ip) {
     rateLimit(this.store, `passkey:${ip}`, 30, 600000);
@@ -247,7 +269,7 @@ export class Auth {
       );
     else
       requireThat(
-        user.session.expires - 12 * 3600000 > Date.now() - 15 * 60000,
+        user.session.expires - TRUST_MS > Date.now() - 15 * 60000,
         '新しいパスワードの設定前に、再ログインしてください',
         403,
       );
