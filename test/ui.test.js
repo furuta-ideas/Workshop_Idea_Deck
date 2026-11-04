@@ -6,6 +6,7 @@ import { webcrypto } from 'node:crypto';
 import { newWorkshop, newTeam } from '../server/store.js';
 import { view } from '../server/domain.js';
 import { parseOutline } from '../server/outline.js';
+import { clearIdea, restoreIdea } from '../server/ideas.js';
 
 const script = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -63,7 +64,12 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         admin: state.admin,
         csrf: 'test',
         demo: false,
-        ai: { provider: 'genspark-enterprise', model: '', imagePrompt: '', approved: [] },
+        ai: state.ai || {
+          provider: 'genspark-enterprise',
+          model: '',
+          imagePrompt: '',
+          approved: [],
+        },
         notion: state.notion,
       };
     else if (path === '/api/facilitator')
@@ -72,8 +78,19 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         version: 'test',
         policy: {},
       };
-    else if (path.endsWith('/advice')) data = { should_speak: false };
-    else if (path.endsWith('/content-sync')) {
+    else if (path.endsWith('/advice')) data = state.adviceResponse || { should_speak: false };
+    else if (path.endsWith('/ai')) {
+      if (state.failAudio)
+        return {
+          ok: false,
+          status: 502,
+          json: async () => ({ error: '録音の認識結果が空でした' }),
+        };
+      data = state.aiResponse || {
+        result: { text: 'テスト音声のテストです。' },
+        proposal: 'audio-test',
+      };
+    } else if (path.endsWith('/content-sync')) {
       ws.documentSync = { pending: false, error: null };
       data = view(ws, admin);
     } else if (path === '/api/workshops')
@@ -168,6 +185,15 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
         team.nodes.splice(at, 1);
         team.nodes.splice(team.nodes.indexOf(target) + (p.position === 'after' ? 1 : 0), 0, n);
       }
+      // ③ deck history runs the server's own functions; images are not stored here.
+      const kv = { put() {}, get() { return null; } };
+      if (body.action === 'clearIdea') clearIdea(kv, ws, team, body.payload);
+      if (body.action === 'restoreIdea') {
+        const { patchDiscussion } = await import('../server/ideas.js');
+        const idea = team.ideas.find((i) => i.id === body.payload.ideaId);
+        if (team.activeIdeaId !== idea.id) patchDiscussion(team, body.payload);
+        restoreIdea(kv, ws, team, idea);
+      }
       if (body.action === 'reparent')
         team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
       if (body.action === 'deck') {
@@ -203,6 +229,98 @@ const click = (f, selector) => {
   assert.ok(el, selector);
   el.click();
 };
+
+test('DOM: 助言ボタンで会話を開き、キャラクターを選び、質問と画面の未保存内容を送る', async (t) => {
+  const f = await setup(t);
+  f.ws.character = 'leafy';
+  f.ws.revision++;
+  await f.state.poll();
+  f.state.adviceResponse = {
+    should_speak: true,
+    source: 'ai',
+    character: 'leafy',
+    bubble_text: 'この企画なら、小さな体験会から試すとよさそうです。',
+  };
+  click(f, '[data-tab="2"]');
+  f.doc.querySelector('#headline').value = '未保存のアイデア';
+  click(f, '#next-advice');
+  assert.ok(f.doc.querySelector('#advice-question'),f.errors.map(e=>e.detail?.stack || e.message).join('\n'));
+  // Only the workshop's character appears; the admin picked リーフィー.
+  assert.equal(f.doc.querySelectorAll('.character-picker img').length, 1);
+  assert.equal(f.doc.querySelector('.character-picker img').getAttribute('alt'), 'リーフィー');
+  assert.equal(f.doc.querySelectorAll('.mascot-duo img').length, 1);
+  const input = f.doc.querySelector('#advice-question');
+  input.value = 'この企画の最初の一歩は？';
+  input.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  f.doc
+    .querySelector('#advice-chat-form')
+    .dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle();
+  const call = f.calls.filter((c) => c.path.endsWith('/advice') && c.body.question).at(-1);
+  assert.equal(call.body.question, 'この企画の最初の一歩は？');
+  assert.equal(call.body.character, 'leafy');
+  assert.equal(call.body.screen.discussion.headline, '未保存のアイデア');
+  assert.match(f.doc.querySelector('#chat-log').textContent, /小さな体験会/);
+  assert.equal(f.doc.querySelector('#headline').value, '未保存のアイデア');
+  assert.equal(f.doc.querySelector('.chat-assistant img').getAttribute('alt'), 'リーフィー');
+});
+
+test('DOM: 録音失敗でも音源を保持して再送でき、認識結果を記録の下書きに追加する', async (t) => {
+  const ai = {
+    provider: 'genspark-gsk',
+    approved: [
+      {
+        id: 'genspark-gsk',
+        ready: true,
+        approvalReference: 'Genspark',
+        capabilities: ['transcribe'],
+      },
+    ],
+    model: '',
+  };
+  const f = await setup(t, '管理者', undefined, { ai });
+  // A deterministic MediaRecorder with real Blob/arrayBuffer support; no actual microphone.
+  f.window.Blob = Blob;
+  let stopped = 0;
+  Object.defineProperty(f.window.navigator, 'mediaDevices', {
+    value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => stopped++ }] }) },
+  });
+  class Recorder {
+    static isTypeSupported() {
+      return true;
+    }
+    constructor() {
+      this.mimeType = 'audio/webm;codecs=opus';
+      this.state = 'inactive';
+    }
+    start() {
+      this.state = 'recording';
+    }
+    stop() {
+      this.state = 'inactive';
+      this.ondataavailable({ data: new Blob([new Uint8Array(256)], { type: this.mimeType }) });
+      void this.onstop();
+    }
+  }
+  f.window.MediaRecorder = Recorder;
+  click(f, '[data-tab="1"]');
+  f.state.failAudio = true;
+  click(f, '#record-discussion');
+  await settle();
+  assert.ok(f.doc.querySelector('#recording-level'));
+  click(f, '#record-discussion');
+  await settle();
+  await settle();
+  assert.ok(f.doc.querySelector('#retry-recording'));
+  assert.ok(f.doc.querySelector('#download-recording'));
+  assert.ok(stopped > 0);
+  assert.equal(f.doc.querySelector('#transcript').value, '');
+  f.state.failAudio = false;
+  click(f, '#retry-recording');
+  await settle();
+  assert.equal(f.doc.querySelector('#transcript').value, 'テスト音声のテストです。');
+  assert.equal(f.team.discussion.transcript, ''); // Shared data changes only when the user saves.
+});
 
 test('DOM: マップ投票アイコン→＋／自分だけ−、投票してもノードとスクロール位置を保持', async (t) => {
   const f = await setup(t);
@@ -555,7 +673,13 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
   click(f, '[data-tab="2"]');
   assert.equal(f.doc.querySelectorAll('[data-slot]').length, 5);
   assert.ok(f.doc.querySelector('#discussion-form'));
-  assert.equal(f.doc.querySelector('#record-discussion').disabled, false);
+  // ③: no discussion record; the outline, then press release and paper prototype.
+  assert.equal(f.doc.querySelector('#record-discussion'), null);
+  assert.equal(f.doc.querySelector('#transcript'), null);
+  assert.equal(f.doc.querySelectorAll('.outline-columns .outline-col').length, 2);
+  assert.ok(f.doc.querySelector('.generate-grid [data-ai="pressRelease"]'));
+  assert.ok(f.doc.querySelector('.generate-grid [data-ai="image"]'));
+  assert.ok(f.doc.querySelector('.generate-grid #pressRelease'));
   f.team.discussion.keywords = '地域';
   f.ws.revision++;
   await f.state.poll();
@@ -877,7 +1001,7 @@ test('DOM: 新しいタブ名、Notion未同期の明示、再同期後の編集
   assert.equal(f.doc.querySelector('.main .content-status'), null);
   click(f, '#settings');
   await settle();
-  assert.match(f.doc.querySelector('.content-status').textContent, /同期未完了/);
+  assert.match(f.doc.querySelector('.content-status').textContent, /記録に失敗/);
   assert.equal(f.doc.querySelector('#new-topic').disabled, false);
   click(f, '#retry-content-sync');
   await settle();
@@ -885,7 +1009,7 @@ test('DOM: 新しいタブ名、Notion未同期の明示、再同期後の編集
   f.doc.querySelector('#modal-close').click();
   click(f, '#settings');
   await settle();
-  assert.match(f.doc.querySelector('.content-status').textContent, /Notionと同期/);
+  assert.match(f.doc.querySelector('.content-status').textContent, /Notionの履歴/);
   assert.deepEqual(
     f.errors.map((e) => e.message),
     [],
@@ -968,4 +1092,125 @@ test('DOM: Notion競合でも入力を保持し、最新内容を読み込んで
     f.errors.map((e) => e.message),
     [],
   );
+});
+
+test('DOM: AIアシスタントのチップで種類付き相談を送り、候補を③へ反映できる', async (t) => {
+  const f = await setup(t);
+  f.state.adviceResponse = {
+    should_speak: true,
+    source: 'ai',
+    character: 'kashi',
+    bubble_text: '3つの案です。',
+    options: [
+      { field: 'headline', value: '駅から始まる新しい日常', reason: '生活者視点' },
+      { field: 'feature2', value: '誰でもすぐ使える' },
+    ],
+  };
+  click(f, '[data-tab="2"]');
+  click(f, '#next-advice');
+  const chips = [...f.doc.querySelectorAll('[data-quick]')].map((b) => b.textContent);
+  assert.ok(chips.includes('一言で言うと×3案'));
+  click(f, '[data-quick="headline"]');
+  await settle();
+  const call = f.calls.filter((c) => c.path.endsWith('/advice') && c.body.question).at(-1);
+  assert.equal(call.body.intent, 'headline');
+  assert.match(call.body.question, /一言で言うと/);
+  assert.match(f.doc.querySelector('.chat-options').textContent, /駅から始まる新しい日常/);
+  click(f, '[data-adopt$=":0"]');
+  await settle();
+  const adopt = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+  assert.equal(adopt.body.action, 'discussion');
+  assert.equal(adopt.body.payload.headline, '駅から始まる新しい日常');
+  click(f, '[data-adopt$=":1"]');
+  await settle();
+  const feature = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+  assert.equal(feature.body.payload.features[1], '誰でもすぐ使える');
+});
+
+test('DOM: ③の「記録を保存」はNotion履歴への記録を依頼する', async (t) => {
+  const f = await setup(t);
+  click(f, '[data-tab="2"]');
+  f.doc.querySelector('#headline').value = '保存する一言';
+  f.doc
+    .querySelector('#discussion-form')
+    .dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle();
+  const call = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+  assert.equal(call.body.action, 'discussion');
+  assert.equal(call.body.payload.snapshot, true);
+  assert.equal(call.body.payload.headline, '保存する一言');
+});
+
+test('DOM: ③は既定で文字を大きくし、絞込み済みカードの＋でデッキへ追加できる', async (t) => {
+  const f = await setup(t);
+  click(f, '[data-tab="2"]');
+  const wrap = f.doc.querySelector('.deck-discussion');
+  assert.ok(wrap.classList.contains('text-scale-115'));
+  const plus = [...f.doc.querySelectorAll('[data-add-deck]')].find((b) => !b.disabled);
+  if (plus) {
+    plus.click();
+    await settle();
+    const call = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+    assert.equal(call.body.action, 'deck');
+    assert.ok(call.body.payload.ids.includes(plus.dataset.addDeck));
+  }
+  assert.equal(f.doc.querySelector('[data-ai="image"]').textContent.includes('ペーパープロトタイプ'), true);
+});
+
+test('DOM: ③リフレッシュで今のデッキを＃1に残して空にし、アイコンで戻れる。④はデッキごとに表示', async (t) => {
+  const f = await setup(t);
+  f.window.confirm = () => true;
+  click(f, '[data-tab="2"]');
+  assert.match(f.doc.querySelector('.deck-history').textContent, /デッキ＃1/);
+  const headline = f.doc.querySelector('#headline');
+  headline.value = '最初の案';
+  headline.dispatchEvent(new f.window.Event('input'));
+  click(f, '#new-deck');
+  await settle();
+  const call = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+  assert.equal(call.body.action, 'clearIdea');
+  assert.equal(call.body.payload.headline, '最初の案');
+  assert.equal(f.doc.querySelector('#headline').value, '');
+  const chip = f.doc.querySelector('[data-deck-idea]');
+  assert.equal(chip.textContent.trim(), 'デッキ＃1');
+  assert.match(f.doc.querySelector('.deck-chip.active').textContent, /デッキ＃2/);
+  chip.click();
+  await settle();
+  assert.equal(f.doc.querySelector('#headline').value, '最初の案');
+  assert.equal(f.doc.querySelector('[data-deck-idea].active')?.textContent.trim(), 'デッキ＃1');
+  // ④: each deck with an image is its own entry and vote target.
+  f.team.ideas[0].image = { key: 'k1', width: 16, height: 9 };
+  f.team.ideas.push({ ...structuredClone(f.team.ideas[0]), id: 'idea-2', image: { key: 'k2', width: 16, height: 9 } });
+  f.ws.revision++;
+  await f.state.poll();
+  click(f, '[data-tab="3"]');
+  await settle();
+  const entries = [...f.doc.querySelectorAll('.idea')];
+  assert.equal(entries.length, 2);
+  assert.match(entries[1].textContent, /デッキ＃2/);
+  assert.equal(entries[1].querySelector('[data-vote="ideas"][data-delta="1"]').dataset.target, 'idea-2');
+  assert.match(entries[0].querySelector('img').getAttribute('src'), /idea-image\?idea=/);
+});
+
+test('DOM: ②にもディスカッションの記録（録音開始・保存）があり、③と同じ記録に保存する', async (t) => {
+  const f = await setup(t);
+  f.team.discussion.transcript = '③で話したこと';
+  f.ws.revision++;
+  await f.state.poll();
+  click(f, '[data-tab="1"]');
+  assert.equal(f.doc.querySelector('#record-discussion').disabled, false);
+  const box = f.doc.querySelector('#transcript');
+  assert.equal(box.value, '③で話したこと');
+  box.value = '③で話したこと\n②でカードを選びながら話したこと';
+  box.dispatchEvent(new f.window.Event('input', { bubbles: true }));
+  f.doc
+    .querySelector('#card-discussion-form')
+    .dispatchEvent(new f.window.Event('submit', { bubbles: true, cancelable: true }));
+  await settle();
+  const call = f.calls.filter((c) => c.path.endsWith('/action')).at(-1);
+  assert.equal(call.body.action, 'discussion');
+  assert.match(call.body.payload.transcript, /②でカードを選びながら/);
+  assert.match(f.team.discussion.transcript, /②でカードを選びながら/);
+  click(f, '[data-tab="2"]');
+  assert.equal(f.doc.querySelector('#transcript'), null);
 });

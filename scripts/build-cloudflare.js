@@ -1,4 +1,4 @@
-import { mkdirSync, copyFileSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import './stamp-build.js';
 const target = resolve('.cloudflare-assets');
@@ -10,6 +10,9 @@ for (const file of [
   'WorkShop_Top.png',
   'fonts/BIZUDPGothic-Regular.ttf',
   'fonts/BIZUDPGothic-Bold.ttf',
+  ...readdirSync('public/characters')
+    .filter((n) => n.endsWith('.png'))
+    .map((n) => 'characters/' + n),
 ]) {
   mkdirSync(dirname(resolve(target, file)), { recursive: true });
   copyFileSync(resolve('public', file), resolve(target, file));

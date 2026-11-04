@@ -499,3 +499,44 @@ test('マップ取消: 削除後に振り直した票と競合する復元は全
   for (let i = 0; i < 5; i++) f.act(f.editor, 'vote', { phase: 'cards', target: b.id, delta: -1 });
   assert.ok(f.act(f.editor, 'undoMap', { teamId }).teams[teamId].nodes.some((n) => n.id === a.id));
 });
+
+test('③の文字サイズは管理者だけが決められた段階から設定できる', (t) => {
+  const f = setup(t);
+  const w = f.act(f.admin, 'settings', { textScale: 130 });
+  assert.equal(w.textScale, 130);
+  assert.throws(() => f.act(f.admin, 'settings', { textScale: 999 }), /文字サイズ/);
+  assert.throws(() => f.act(f.editor, 'settings', { textScale: 100 }), /管理者/);
+});
+
+test('③デッキのリフレッシュ: 今のデッキを＃1として保存して空にし、＃1へ戻すと＃2も残る', (t) => {
+  const f = setup(t),
+    ids = f.team.nodes.map((n) => n.id);
+  f.act(f.admin, 'timer', { phase: 'cards' });
+  for (const target of ids.slice(0, 3)) f.act(f.editor, 'vote', { phase: 'cards', target, delta: 1 });
+  f.act(f.editor, 'deck', { teamId: f.team.id, ids: ids.slice(0, 2) });
+  // Unsent edits arrive with the refresh and stay with deck #1.
+  let w = f.act(f.editor, 'clearIdea', { teamId: f.team.id, headline: '最初の案', transcript: '議論1' });
+  let tm = w.teams[f.team.id];
+  assert.equal(tm.ideas.length, 1);
+  assert.deepEqual(tm.ideas[0].deck, ids.slice(0, 2));
+  assert.equal(tm.ideas[0].discussion.headline, '最初の案');
+  assert.deepEqual(tm.deck, []);
+  assert.equal(tm.discussion.headline, '');
+  assert.equal(tm.discussion.transcript, '');
+  assert.equal(tm.activeIdeaId, null);
+  // Deck #2 with only cards is still kept when switching back to #1.
+  f.act(f.editor, 'deck', { teamId: f.team.id, ids: [ids[2]] });
+  w = f.act(f.editor, 'restoreIdea', { teamId: f.team.id, ideaId: tm.ideas[0].id, headline: '二つ目' });
+  tm = w.teams[f.team.id];
+  assert.equal(tm.ideas.length, 2);
+  assert.deepEqual(tm.ideas[1].deck, [ids[2]]);
+  assert.equal(tm.ideas[1].discussion.headline, '二つ目');
+  assert.equal(tm.activeIdeaId, tm.ideas[0].id);
+  assert.deepEqual(tm.deck, ids.slice(0, 2));
+  assert.equal(tm.discussion.headline, '最初の案');
+  // An empty refresh does not add an empty deck.
+  w = f.act(f.editor, 'clearIdea', { teamId: f.team.id });
+  w = f.act(f.editor, 'clearIdea', { teamId: f.team.id });
+  assert.equal(w.teams[f.team.id].ideas.length, 2);
+  assert.throws(() => f.act(f.viewer, 'clearIdea', { teamId: f.team.id }));
+});

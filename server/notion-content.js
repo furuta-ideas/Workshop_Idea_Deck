@@ -1,14 +1,54 @@
+// Workshop history in Notion (v0.14).
+//
+// Each time a team presses 「記録を保存」 or applies a generated image, the
+// app appends one toggle under the 「ワークショップの履歴」 heading:
+//
+//   ▸ 20261108_221400_ビザスクセミナー＿A班
+//       ▸ 求められる世界        → ▸ <map centre text>
+//       ▸ マインドマップ        → nested toggles (the topic tree)
+//       ▸ ペーパープロトタイプ  → generated image
+//       ▸ 模擬プレスリリース    → paragraphs
+//       ▸ アイデアの輪郭        → 一言で言うと／Who／What／How／特長1〜3／キーワード
+//       ▸ 議論メモ              → paragraphs
+//       ▸ 設定情報
+//           ▸ AIファシリテータ（プロンプト）
+//           ▸ ペーパープロトタイプ（プロンプト）
+//           ▸ 模擬プレスリリース（プロンプト）
+//           ▸ 投票結果            → JSON code block
+//
+// Notion is the master. When the newest entry of a team changes in Notion
+// (or the server starts empty), the app restores that team from it.
 import { hash } from './store.js';
-import { deckSlots } from './deck.js';
-import { requireThat, mutate, totals, access, teamFor } from './domain.js';
+import { requireThat, mutate, access, teamFor, totals } from './domain.js';
 import { validatePNG } from './png.js';
-import { outboxKey, snapshotStore, mergeBlockIds, preserveLocalContent } from './notion-outbox.js';
+import { preserveLocalContent } from './notion-outbox.js';
+import { patchDiscussion, hasDeckContent } from './ideas.js';
 
-export const stageTitles = [
-  '① もやもやの言語化（N1）',
-  '② 言語化の絞込み（カードの選択）',
-  '③ アイデアの可視化（カードの可視化）',
-  '④ アイデアの絞込み（投票）',
+export const historyHeading = 'ワークショップの履歴';
+export const sections = {
+  world: '求められる世界',
+  map: 'マインドマップ',
+  image: 'ペーパープロトタイプ',
+  press: '模擬プレスリリース',
+  outline: 'アイデアの輪郭',
+  memo: '議論メモ',
+  settings: '設定情報',
+};
+export const settingTitles = {
+  facilitator: 'AIファシリテータ（プロンプト）',
+  imagePrompt: 'ペーパープロトタイプ（プロンプト）',
+  pressPrompt: '模擬プレスリリース（プロンプト）',
+  votes: '投票結果',
+};
+const outlineFields = [
+  ['headline', '一言で言うと', 100],
+  ['who', 'Who', 40],
+  ['what', 'What', 40],
+  ['how', 'How', 120],
+  ['feature1', '特長1', 200],
+  ['feature2', '特長2', 200],
+  ['feature3', '特長3', 200],
+  ['keywords', 'キーワード', 500],
 ];
 const colors = [
   'default',
@@ -21,6 +61,7 @@ const colors = [
   'gray_background',
 ];
 const textTypes = new Set([
+  'heading_1',
   'heading_2',
   'heading_3',
   'heading_4',
@@ -29,87 +70,194 @@ const textTypes = new Set([
   'numbered_list_item',
   'paragraph',
   'to_do',
+  'quote',
+  'callout',
 ]);
-const words = (b) =>
-  (b[b.type]?.rich_text || []).map((x) => x.plain_text ?? x.text?.content ?? '').join('');
-const rt = (text) =>
-  Array.from({ length: Math.max(1, Math.ceil(text.length / 1800)) }, (_, i) => ({
+const stateKey = (id) => `notion-content:${id}`;
+const outboxKey = (id) => `notion-history-outbox:${id}`;
+const plain = (list) => (list || []).map((x) => x.plain_text ?? x.text?.content ?? '').join('');
+const words = (b) => plain(b?.[b.type]?.rich_text);
+const clip = (s, max) => [...String(s ?? '')].slice(0, max).join('');
+const rt = (value) => {
+  const s = String(value ?? '');
+  const n = Math.max(1, Math.min(100, Math.ceil(s.length / 2000)));
+  return Array.from({ length: n }, (_, i) => ({
     type: 'text',
-    text: { content: text.slice(i * 1800, (i + 1) * 1800) },
+    text: { content: s.slice(i * 2000, (i + 1) * 2000) },
   }));
-const phaseOf = (b) =>
-  /^heading_/.test(b.type) && !b[b.type]?.is_toggleable
-    ? '①②③④'.indexOf(words(b).trim()[0]) + 1
-    : 0;
-const teamName = (b) =>
-  b.type === 'toggle' && /^チーム[：:]\s*/.test(words(b))
-    ? words(b).replace(/^チーム[：:]\s*/, '')
-    : null;
-const signature = (tree) =>
-  hash(
-    JSON.stringify(
-      tree.map((b) => ({
-        id: b.id,
-        type: b.type,
-        p: b.parentId,
-        text: words(b),
-        color: b[b.type]?.color,
-        caption: (b[b.type]?.caption || [])
-          .map((x) => x.plain_text ?? x.text?.content ?? '')
-          .join(''),
-        children: signature(b.children || []),
-      })),
-    ),
-  );
-const payload = (type, text, color = 'default') => ({
+};
+const block = (type, text, extra = {}) => ({
   object: 'block',
   type,
-  [type]: {
-    rich_text: rt(text),
-    color,
-    ...(type.startsWith('heading_') ? { is_toggleable: true } : {}),
-  },
+  [type]: { rich_text: rt(text), ...extra },
 });
-const snapshotMarker = 'Workshop Idea Deck state v1';
-const idleMilliseconds = 10000;
-const applyBlockUpdate = (block, body) => {
-  const type = block.type,
-    content = body[type] ? { ...block[type], ...body[type] } : null;
-  Object.assign(block, body);
-  if (content) block[type] = content;
+const toggle = (text, children, color) =>
+  block('toggle', text, {
+    ...(color ? { color } : {}),
+    ...(children?.length ? { children } : {}),
+  });
+// Long text → one paragraph per blank-line separated part.
+const paragraphs = (text) => {
+  const parts = String(text || '')
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return parts.length ? parts.map((p) => block('paragraph', p)) : [block('paragraph', '')];
 };
+const stamp = (ms) => {
+  const jst = new Date(ms + 9 * 3600000).toISOString();
+  return `${jst.slice(0, 10).replaceAll('-', '')}_${jst.slice(11, 19).replaceAll(':', '')}`;
+};
+export const entryTitle = (ws, team, ms) => `${stamp(ms)}_${ws.name}＿${team.name}`;
+// "yyyymmdd_hhmmss_…＿<team>" → "yyyymmdd_hhmmss", else null (template, examples).
+const entryStamp = (title, teamName) => {
+  const m = /^(\d{8}_\d{6})_/.exec(title || '');
+  if (!m) return null;
+  return title.endsWith(`＿${teamName}`) || title.endsWith(`_${teamName}`) ? m[1] : null;
+};
+// Network trouble, rate limits and Notion 5xx retry by themselves.
+const retryable = (e) =>
+  e.notionStatus === 429 || e.notionStatus >= 500 || (!e.status && !e.notionStatus);
+// Changes made without 「記録を保存」 (AI results, transcripts, deck choices) are recorded
+// once things settle, as one entry per team for that window.
+export const AUTO_DELAY_MS = 60000;
+// The page's app settings live in one toggle under 「アプリの設定」, replaced on each change.
+export const settingsHeading = 'アプリの設定';
+export const settingsToggle = '設定情報（アプリの最新設定）';
+export const syncDue = (s) => s?.queued && (!s.error || s.retryable);
+export const syncAt = (s) => Math.max(s?.dueAt || 0, s?.error ? s.retryAt || 0 : 0);
+
+// ④ votes of a team: its own (older data) plus those of each saved deck.
+export function teamIdeaVotes(ws, team) {
+  const t = totals(ws, 'ideas');
+  return (t[team.id] || 0) + (team.ideas || []).reduce((a, i) => a + (t[i.id] || 0), 0);
+}
 export class NotionContent {
   constructor(notion) {
     this.notion = notion;
     this.store = notion.store;
-    this.loaded = new Set();
     this.active = new Map();
     this.reading = new Set();
   }
   state(ws) {
-    return this.store.get('kv', `notion-content:${ws.id}`);
+    return this.store.get('kv', stateKey(ws.id));
   }
   save(ws, state) {
-    this.store.put('kv', `notion-content:${ws.id}`, state);
+    this.store.put('kv', stateKey(ws.id), state);
   }
-  schedule(ws, now = Date.now(), changed = true) {
+  outbox(wsId) {
+    return this.store.get('kv', outboxKey(wsId))?.jobs || [];
+  }
+  // ---- Writing -----------------------------------------------------------
+  settings() {
+    const rows = this.notion.settingsProvider?.() || [];
+    const value = (key) => rows.find((r) => r.key === key)?.value || '';
+    return {
+      facilitator: value('ai:facilitator'),
+      imagePrompt: value('ai:imagePrompt'),
+      pressPrompt: value('ai:pressReleasePrompt'),
+    };
+  }
+  capture(ws, team, now) {
+    const cardTotals = totals(ws, 'cards');
+    const d = team.discussion;
+    return {
+      teamId: team.id,
+      teamName: team.name,
+      title: entryTitle(ws, team, now),
+      world: team.rootText || ws.theme || '',
+      nodes: team.nodes.map(({ id, text, parent, group }) => ({ id, text, parent, group })),
+      press: d.pressRelease || '',
+      outline: {
+        headline: d.headline || '',
+        who: d.who || '',
+        what: d.what || '',
+        how: d.how || '',
+        feature1: d.features?.[0] || '',
+        feature2: d.features?.[1] || '',
+        feature3: d.features?.[2] || '',
+        keywords: d.keywords || '',
+      },
+      memo: d.transcript || '',
+      settings: this.settings(),
+      votes: Object.fromEntries(
+        team.nodes.filter((n) => cardTotals[n.id] > 0).map((n) => [n.id, cardTotals[n.id]]),
+      ),
+      deck: [...team.deck],
+      ideaVotes: teamIdeaVotes(ws, team),
+      imageKey: team.image ? hash(team.image.base64) : null,
+    };
+  }
+  // Record a snapshot of one team now; it is sent in the background.
+  // 'auto' snapshots replace this team's earlier unsent 'auto' snapshot and wait
+  // AUTO_DELAY_MS; 'save' and 'image' are sent at once and never replaced.
+  schedule(ws, teamId, reason = 'save', now = Date.now(), snapshot) {
+    const team = ws.teams[teamId];
+    if (!ws.notion || !team) return ws;
+    const sending = this.active.has(ws.id);
+    let jobs = this.outbox(ws.id);
+    if (!sending || jobs.length > 1)
+      jobs = jobs.filter((j, i) => (sending && i === 0) || !(j.reason === 'auto' && j.snapshot?.teamId === teamId));
+    jobs.push({ reason, snapshot: snapshot || this.capture(ws, team, now) });
+    return this.queue(ws, jobs, now + (reason === 'auto' ? AUTO_DELAY_MS : 0));
+  }
+  queue(ws, jobs, dueAt) {
+    this.store.put('kv', outboxKey(ws.id), { jobs });
+    const s = ws.documentSync || {};
     ws.documentSync = {
-      ...ws.documentSync,
-      pending: true,
+      ...s,
       queued: true,
-      syncing: this.active.has(ws.id),
-      dueAt: now + idleMilliseconds,
-      generation: (ws.documentSync?.generation || 0) + (changed ? 1 : 0),
-      error: ws.documentSync?.error || null,
+      pending: true,
+      dueAt: s.queued && s.dueAt ? Math.min(s.dueAt, dueAt) : dueAt,
+      error: s.retryable ? s.error : null,
     };
     this.store.put('workshops', ws.id, ws);
     return ws;
   }
-  activity(user, wsId, teamId, now = Date.now()) {
+  // App settings (AI prompts and models, facilitator md, this workshop's display and
+  // voting settings) as label/value rows.
+  settingsRows(ws) {
+    const rows = (this.notion.settingsProvider?.() || []).map(({ label, value }) => ({ label, value: String(value ?? '') }));
+    const character = { kashi: 'カシー（男の子）', leafy: 'リーフィー（女の子）' }[ws.character || 'kashi'];
+    rows.push(
+      { label: '③の文字サイズ', value: `${ws.textScale || 115}%` },
+      { label: 'AIアドバイスのキャラクター', value: character },
+      { label: '② カード選択の票数・投票時間', value: `${ws.budgets?.cards}票・${ws.durations?.cards}秒` },
+      { label: '④ アイディア投票の票数・投票時間', value: `${ws.budgets?.ideas}票・${ws.durations?.ideas}秒` },
+    );
+    return rows;
+  }
+  scheduleSettings(ws, now = Date.now()) {
+    if (!ws?.notion || ws.deleted) return ws;
+    const jobs = this.outbox(ws.id).filter((j, i) => (this.active.has(ws.id) && i === 0) || j.reason !== 'settings');
+    jobs.push({ reason: 'settings', at: now });
+    return this.queue(ws, jobs, now + 2000);
+  }
+  async writeSettings(ws) {
+    const top = await this.topBlocks(ws);
+    for (const b of top.filter((b) => b.type === 'toggle' && words(b) === settingsToggle))
+      await this.notion.call(`blocks/${b.id}`, 'PATCH', { in_trash: true });
+    let heading = top.find((b) => /^heading_/.test(b.type) && words(b).trim() === settingsHeading);
+    if (!heading)
+      [heading] = await this.append(ws.notion.pageId, [block('heading_2', settingsHeading, { color: 'green_background' })]);
+    const [box] = await this.append(ws.notion.pageId, [toggle(settingsToggle)], { type: 'after_block', after_block: { id: heading.id } });
+    requireThat(box?.id, 'Notionへの設定の保存結果を確認できません', 502);
+    const rows = this.settingsRows(this.store.get('workshops', ws.id) || ws);
+    const long = rows.filter((r) => r.value.length > 120 || r.value.includes('\n')),
+      short = rows.filter((r) => !long.includes(r));
+    await this.append(box.id, [
+      block('paragraph', `更新：${stamp(Date.now()).replace('_', ' ')}（アプリで設定を保存すると、この欄を最新の内容に置き換えます）`),
+      ...short.map((r) => block('paragraph', `${r.label}：${r.value || '（未設定）'}`)),
+    ]);
+    if (long.length) {
+      const made = await this.append(box.id, long.map((r) => toggle(r.label)));
+      for (const [i, r] of long.entries()) if (made[i]?.id) await this.append(made[i].id, paragraphs(r.value));
+    }
+  }
+  activity(user, wsId, teamId) {
     const ws = this.store.get('workshops', wsId);
     access(this.store, ws, user, true);
     teamFor(ws, user, teamId);
-    if (ws.documentSync?.queued) this.schedule(ws, now, false);
     return { queued: !!ws.documentSync?.queued };
   }
   due(now = Date.now()) {
@@ -118,42 +266,50 @@ export class NotionContent {
       .filter(
         (ws) =>
           ws.notion &&
-          ws.documentSync?.queued &&
-          !ws.documentSync.error &&
-          ws.documentSync.dueAt <= now &&
+          syncDue(ws.documentSync) &&
+          syncAt(ws.documentSync) <= now &&
           !this.active.has(ws.id) &&
           !this.reading.has(ws.id),
       )
-      .sort((a, b) => a.documentSync.dueAt - b.documentSync.dueAt)[0];
+      .sort((a, b) => syncAt(a.documentSync) - syncAt(b.documentSync))[0];
   }
-  recoverScheduled(now = Date.now()) {
+  recoverScheduled() {
     for (const ws of this.store.all('workshops'))
-      if (ws.notion && ws.documentSync?.syncing && !ws.documentSync.error)
-        this.schedule(ws, now, false);
+      if (ws.notion && ws.documentSync?.syncing) {
+        const queued = this.outbox(ws.id).length > 0;
+        ws.documentSync = { ...ws.documentSync, syncing: false, queued, pending: queued };
+        this.store.put('workshops', ws.id, ws);
+      }
+  }
+  requestRetry(wsId, now = Date.now()) {
+    const ws = this.store.get('workshops', wsId);
+    if (this.active.has(wsId)) return ws;
+    const queued = this.outbox(wsId).length > 0;
+    ws.documentSync = {
+      ...ws.documentSync,
+      error: null,
+      retries: 0,
+      retryAt: 0,
+      queued,
+      pending: queued,
+      dueAt: now,
+    };
+    this.store.put('workshops', wsId, ws);
+    return ws;
+  }
+  async retry(ws) {
+    return this.flushScheduled(ws.id, Date.now(), true);
   }
   async flushScheduled(wsId, now = Date.now(), force = false) {
     if (this.active.has(wsId)) return this.active.get(wsId);
     const ws = this.store.get('workshops', wsId);
     if (
+      !ws?.notion ||
       this.reading.has(wsId) ||
-      !ws ||
-      (!force && (!ws.documentSync?.queued || ws.documentSync.error || ws.documentSync.dueAt > now))
+      (!force && (!syncDue(ws.documentSync) || syncAt(ws.documentSync) > now))
     )
       return ws;
-    const job = this.store.get('kv', outboxKey(wsId)) || {
-      generation: ws.documentSync?.generation || 0,
-      workshop: structuredClone(ws),
-    };
-    this.store.put('kv', outboxKey(wsId), job);
-    ws.documentSync = {
-      ...ws.documentSync,
-      queued: (ws.documentSync?.generation || 0) > job.generation,
-      syncing: true,
-      pending: true,
-      error: null,
-    };
-    this.store.put('workshops', ws.id, ws);
-    const work = this.sendSnapshot(job);
+    const work = this.sendAll(wsId, now);
     this.active.set(wsId, work);
     try {
       return await work;
@@ -161,318 +317,287 @@ export class NotionContent {
       this.active.delete(wsId);
     }
   }
-  async sendSnapshot(job) {
-    const sender = new NotionContent(this.notion);
-    sender.store = snapshotStore(this.store, job);
-    let sent;
+  async sendAll(wsId, now) {
+    let ws = this.store.get('workshops', wsId);
+    ws.documentSync = { ...ws.documentSync, syncing: true };
+    this.store.put('workshops', wsId, ws);
+    let error = null;
     try {
-      sent = await sender.push(structuredClone(job.workshop));
+      for (;;) {
+        const jobs = this.outbox(wsId);
+        if (!jobs.length) break;
+        if (jobs[0].reason === 'settings') await this.writeSettings(ws);
+        else await this.writeEntry(ws, jobs[0]);
+        const rest = this.outbox(wsId).slice(1);
+        if (rest.length) this.store.put('kv', outboxKey(wsId), { jobs: rest });
+        else this.store.del('kv', outboxKey(wsId));
+      }
     } catch (e) {
-      sent = job.workshop;
-      sent.documentSync = { ...sent.documentSync, pending: true, error: e.message };
+      error = e;
     }
-    const live = this.store.get('workshops', sent.id);
-    mergeBlockIds(live, sent);
-    const newer = (live.documentSync?.generation || 0) > job.generation;
-    if (!sent.documentSync?.error) {
-      live.notion.baseEdited = sent.notion.baseEdited;
-      this.store.del('kv', outboxKey(sent.id));
-    }
-    live.documentSync = {
-      ...live.documentSync,
-      syncing: false,
-      pending: !!sent.documentSync?.error || newer,
-      queued: newer || !!sent.documentSync?.error,
-      error: sent.documentSync?.error || null,
-      ...(!sent.documentSync?.error ? { at: Date.now() } : {}),
-    };
-    this.store.put('workshops', live.id, live);
-    return live;
-  }
-  requestRetry(wsId, now = Date.now()) {
-    const ws = this.store.get('workshops', wsId);
-    if (this.active.has(wsId)) return ws;
-    ws.documentSync = { ...ws.documentSync, error: null };
-    this.schedule(ws, now, false);
-    ws.documentSync.dueAt = now;
+    ws = this.store.get('workshops', wsId);
+    const left = this.outbox(wsId).length > 0;
+    const s = { ...ws.documentSync, syncing: false, queued: left, pending: left };
+    if (error) {
+      s.error = error.message;
+      s.retryable = retryable(error);
+      if (s.retryable) {
+        s.retries = (s.retries || 0) + 1;
+        s.retryAt = now + Math.min(600000, 30000 * 2 ** (s.retries - 1));
+      }
+    } else
+      Object.assign(s, {
+        error: null,
+        retryable: false,
+        retries: 0,
+        retryAt: 0,
+        at: Date.now(),
+      });
+    ws.documentSync = s;
     this.store.put('workshops', wsId, ws);
     return ws;
   }
-  preserveIncoming(ws, baseline, metadataOnly = false) {
-    const live = this.store.get('workshops', ws.id);
-    if (live?.documentSync?.at > (baseline.documentSync?.at || 0) && live.notion?.baseEdited)
-      ws.notion.baseEdited = live.notion.baseEdited;
-    if (
-      live &&
-      (metadataOnly ||
-        baseline.documentSync?.pending ||
-        live.documentSync?.pending ||
-        this.active.has(ws.id) ||
-        (live.documentSync?.generation || 0) !== (baseline.documentSync?.generation || 0))
-    ) {
-      preserveLocalContent(ws, live);
-      return true;
-    }
-    return false;
+  async topBlocks(ws) {
+    return this.notion.list(`blocks/${ws.notion.pageId}/children`);
   }
-  applyIncoming(ws, original) {
-    const live = this.store.get('workshops', ws.id);
-    if (live) {
-      const changed = ws.revision !== original.revision;
-      const latest = structuredClone(live);
-      preserveLocalContent(latest, ws);
-      latest.revision = live.revision + (changed ? 1 : 0);
-      for (const key of Object.keys(ws)) delete ws[key];
-      Object.assign(ws, latest);
-    }
-    this.store.put('workshops', ws.id, ws);
-  }
-  async read(ws) {
-    const top = await this.notion.list(`blocks/${ws.notion.pageId}/children`),
-      sections = {};
-    let current;
-    for (const b of top) {
-      const phase = phaseOf(b);
-      if (phase) {
-        requireThat(!sections[phase], '同じ番号のNotion見出しが重複しています', 409);
-        current = sections[phase] = { id: b.id, heading: b, roots: [] };
-      } else if (current) current.roots.push(b);
-    }
-    if (!sections[1]) return null;
-    let count = 0;
-    const load = async (b, parentId, depth) => {
-      requireThat(
-        depth < 510 && ++count <= 5000,
-        'Notionの階層・ブロック数が上限を超えています',
-        409,
-      );
-      const copy = { ...b, parentId, children: [] };
-      if (b.has_children && b.type !== 'child_database' && b.type !== 'child_page')
-        for (const c of await this.notion.list(`blocks/${b.id}/children`))
-          copy.children.push(await load(c, b.id, depth + 1));
-      return copy;
-    };
-    for (const [phase, section] of Object.entries(sections)) {
-      const roots = [];
-      for (const b of section.roots) {
-        if (phase === '1' || teamName(b) !== null) roots.push(await load(b, ws.notion.pageId, 0));
-      }
-      section.roots = roots;
-    }
-    return { sections, top: top.map((b) => ({ id: b.id, phase: phaseOf(b) })) };
-  }
-  fingerprint(doc) {
-    return hash(
-      JSON.stringify(
-        Object.entries(doc.sections).map(([p, s]) => [
-          p,
-          s.id,
-          words(s.heading),
-          signature(s.roots),
-        ]),
-      ),
+  // Find (or create) the history heading; new entries go right after the
+  // template toggle, or the heading itself, so the newest is on top.
+  async anchor(ws, top) {
+    const index = top.findIndex(
+      (b) => /^heading_/.test(b.type) && words(b).trim() === historyHeading,
     );
-  }
-  all(doc) {
-    return Object.values(doc.sections).flatMap((s) => {
-      const out = [];
-      const visit = (b) => {
-        out.push(b);
-        b.children.forEach(visit);
-      };
-      s.roots.forEach(visit);
-      return out;
-    });
-  }
-  teamRoots(ws, doc, team) {
-    const roots = doc.sections[1].roots,
-      wrapper = roots.find((b) => teamName(b) === team.name),
-      first = Object.values(ws.teams).find((t) => t.name === 'A班') || Object.values(ws.teams)[0],
-      legacy = first?.id === team.id ? roots.filter((b) => teamName(b) === null) : [];
-    return {
-      parentId: wrapper?.id || (legacy.length ? ws.notion.pageId : null),
-      roots: [...legacy, ...(wrapper?.children || [])],
-    };
-  }
-  parseNodes(ws, doc, team, transitional = false) {
-    const old = new Map(
-        Object.values(ws.teams)
-          .flatMap((t) => t.nodes)
-          .filter((n) => n.notionBlockId)
-          .map((n) => [n.notionBlockId, n]),
-      ),
-      nodes = [];
-    const recorded = this.parseRecord(this.record(doc, team, 2).code, 2);
-    if (recorded?.cards) {
-      requireThat(
-        Array.isArray(recorded.cards) && recorded.cards.length <= 500,
-        'Notionのカード対応表が不正です',
-        409,
-      );
-      for (const card of recorded.cards)
-        if (card.notionBlockId && !old.has(card.notionBlockId)) {
-          requireThat(/^[a-z0-9-]{1,100}$/i.test(card.id), 'NotionのカードIDが不正です', 409);
-          old.set(card.notionBlockId, { id: card.id });
-        }
+    if (index < 0) {
+      const created = await this.notion.call(`blocks/${ws.notion.pageId}/children`, 'PATCH', {
+        children: [block('heading_2', historyHeading, { color: 'green_background' })],
+        position: { type: 'start' },
+      });
+      return created.results?.[0]?.id;
     }
+    const template = top
+      .slice(index + 1)
+      .find((b) => b.type === 'toggle' && words(b).includes('（テンプレート）'));
+    return (template || top[index]).id;
+  }
+  async append(parentId, children, position) {
+    const created = [];
+    for (let i = 0; i < children.length; i += 100) {
+      const result = await this.notion.call(`blocks/${parentId}/children`, 'PATCH', {
+        children: children.slice(i, i + 100),
+        ...(position && i === 0 ? { position } : {}),
+      });
+      created.push(...(result.results || []));
+    }
+    return created;
+  }
+  async uploadImage(base64, name) {
+    const upload = await this.notion.call('file_uploads', 'POST', {
+      mode: 'single_part',
+      filename: name,
+      content_type: 'image/png',
+    });
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from(base64, 'base64')], { type: 'image/png' }), name);
+    await this.notion.call(`file_uploads/${upload.id}/send`, 'POST', form);
+    return upload.id;
+  }
+  async writeEntry(ws, job) {
+    const snap = job.snapshot;
+    const top = await this.topBlocks(ws);
+    // A half-written entry from an interrupted attempt has the same title.
+    for (const b of top.filter((b) => b.type === 'toggle' && words(b) === snap.title))
+      await this.notion.call(`blocks/${b.id}`, 'PATCH', { in_trash: true });
+    const after = await this.anchor(ws, top);
+    const [entry] = await this.append(
+      ws.notion.pageId,
+      [toggle(snap.title)],
+      after ? { type: 'after_block', after_block: { id: after } } : undefined,
+    );
+    requireThat(entry?.id, 'Notionへの履歴の追加結果を確認できません', 502);
+    let imageChildren = [block('paragraph', '（画像はまだありません）')];
+    const base64 = snap.imageKey && this.store.blob(snap.imageKey);
+    if (base64) {
+      const upload = await this.uploadImage(base64, `${snap.imageKey.slice(0, 24)}.png`);
+      imageChildren = [
+        {
+          object: 'block',
+          type: 'image',
+          image: {
+            type: 'file_upload',
+            file_upload: { id: upload },
+            caption: rt(`image:${snap.imageKey}`),
+          },
+        },
+      ];
+    }
+    const o = snap.outline;
+    // Create the empty sections first, then fill each in batches of 100
+    // blocks, so long texts (facilitator md, notes) are never cut short.
+    const made = await this.append(
+      entry.id,
+      Object.values(sections).map((title) => toggle(title)),
+    );
+    const sectionId = (title) => made.find((b) => words(b) === title)?.id;
+    await this.append(sectionId(sections.world), [toggle(snap.world || '（未設定）')]);
+    await this.append(sectionId(sections.image), imageChildren);
+    await this.append(sectionId(sections.press), paragraphs(snap.press));
+    await this.append(
+      sectionId(sections.outline),
+      outlineFields.map(([key, label]) => block('paragraph', `${label}：${o[key] || ''}`)),
+    );
+    await this.append(sectionId(sections.memo), paragraphs(snap.memo));
+    // The topic tree, one level at a time (Notion nests at most two levels per call).
+    const blockIds = {};
+    const level = async (parentNode, parentBlock) => {
+      const kids = snap.nodes.filter((n) =>
+        parentNode === 'theme'
+          ? n.parent === 'theme' || n.parent === null
+          : n.parent === parentNode,
+      );
+      if (!kids.length) return;
+      const created = await this.append(
+        parentBlock,
+        kids.map((n) => toggle(n.text, null, colors[n.group] || 'default')),
+      );
+      for (const [i, n] of kids.entries()) blockIds[n.id] = created[i]?.id;
+      for (const n of kids) if (blockIds[n.id]) await level(n.id, blockIds[n.id]);
+    };
+    await level('theme', sectionId(sections.map));
+    const votes = {
+      cards: Object.entries(snap.votes).map(([id, n]) => ({
+        id,
+        text: `${snap.nodes.find((x) => x.id === id)?.text || ''} #VOTES:${n}`,
+        notionBlockId: blockIds[id] || null,
+      })),
+      deck: snap.deck.map((id) => ({ id, notionBlockId: blockIds[id] || null })),
+      ideaVotes: snap.ideaVotes,
+    };
+    const settingBlocks = await this.append(
+      sectionId(sections.settings),
+      Object.values(settingTitles).map((title) => toggle(title)),
+    );
+    const settingId = (title) => settingBlocks.find((b) => words(b) === title)?.id;
+    await this.append(settingId(settingTitles.facilitator), paragraphs(snap.settings.facilitator));
+    await this.append(settingId(settingTitles.imagePrompt), paragraphs(snap.settings.imagePrompt));
+    await this.append(settingId(settingTitles.pressPrompt), paragraphs(snap.settings.pressPrompt));
+    await this.append(settingId(settingTitles.votes), [
+      {
+        object: 'block',
+        type: 'code',
+        code: { rich_text: rt(JSON.stringify(votes, null, 2)), language: 'javascript' },
+      },
+    ]);
+    // Remember what we wrote, so the next read does not "restore" it.
+    const parsed = this.parse(await this.readTree(entry.id), snap.teamName);
+    const state = this.state(ws) || {};
+    state.entries ||= {};
+    state.entries[snap.teamName] = {
+      id: entry.id,
+      stamp: entryStamp(snap.title, snap.teamName),
+      fp: parsed.fp,
+      // Notion block → the app's card ID, so restores keep IDs stable.
+      ids: Object.fromEntries(Object.entries(blockIds).map(([nodeId, b]) => [b, nodeId])),
+    };
+    this.save(ws, state);
+  }
+  // ---- Reading -----------------------------------------------------------
+  async readTree(blockId, depth = 0, budget = { n: 0 }) {
+    requireThat(depth < 60 && budget.n < 6000, 'Notionの履歴が深すぎるか大きすぎます', 409);
+    const children = await this.notion.list(`blocks/${blockId}/children`);
+    const out = [];
+    for (const b of children) {
+      if (b.archived || b.in_trash) continue;
+      budget.n++;
+      out.push({
+        id: b.id,
+        type: b.type,
+        text: words(b),
+        color: b[b.type]?.color,
+        caption: plain(b[b.type]?.caption),
+        url: b.type === 'image' ? b.image?.file?.url || b.image?.external?.url : undefined,
+        children:
+          b.has_children && b.type !== 'child_database' && b.type !== 'child_page'
+            ? await this.readTree(b.id, depth + 1, budget)
+            : [],
+      });
+    }
+    return out;
+  }
+  parse(tree, teamName) {
+    const section = (title) => tree.find((b) => b.text.trim() === title);
+    const texts = (b) =>
+      (b?.children || []).filter((c) => textTypes.has(c.type)).map((c) => c.text);
+    const settings = section(sections.settings);
+    const setting = (title) => settings?.children.find((b) => b.text.trim() === title);
+    const world = section(sections.world)?.children.find((c) => textTypes.has(c.type))?.text;
+    const nodes = [];
     const visit = (b, parent) => {
-      if (textTypes.has(b.type) && words(b).trim()) {
-        requireThat(
-          [...words(b)].length <= 500,
-          'Notionのトピックは500文字以内で設定してください',
-          409,
-        );
-        const previous = old.get(b.id);
-        const node = {
-          id: previous?.id || b.id,
-          notionBlockId: b.id,
-          text: words(b),
-          group: Math.max(0, colors.indexOf(b[b.type]?.color)),
+      if (textTypes.has(b.type) && b.text.trim()) {
+        nodes.push({
+          blockId: b.id,
+          text: clip(b.text, 500),
           parent,
-        };
-        requireThat(
-          transitional || !nodes.some((n) => n.id === node.id),
-          'NotionのカードIDが重複しています',
-          409,
-        );
-        nodes.push(node);
-        requireThat(
-          nodes.length <= (transitional ? 1000 : 500),
-          'Notionのトピックは班ごとに500件以内です',
-          409,
-        );
-        for (const c of b.children) visit(c, node.id);
+          group: Math.max(0, colors.indexOf(b.color)),
+        });
+        for (const c of b.children) visit(c, b.id);
       } else for (const c of b.children) visit(c, parent);
     };
-    for (const b of this.teamRoots(ws, doc, team).roots) visit(b, 'theme');
-    return nodes;
-  }
-  record(doc, team, phase) {
-    const wrapper = doc.sections[phase]?.roots.find((b) => teamName(b) === team.name);
-    const code = wrapper?.children.find(
-      (b) =>
-        b.type === 'code' &&
-        (b.code.caption || []).map((x) => x.plain_text ?? x.text?.content ?? '').join('') ===
-          snapshotMarker,
-    );
-    return { wrapper, code };
-  }
-  parseRecord(code, phase) {
-    if (!code) return null;
-    let record;
-    try {
-      record = JSON.parse(words(code));
-    } catch {
-      requireThat(false, `${stageTitles[phase - 1]}のJSON記録が不正です`, 409);
+    for (const b of section(sections.map)?.children || []) visit(b, 'theme');
+    const outline = {};
+    for (const line of texts(section(sections.outline))) {
+      const m = /^([^：:]+)[：:]\s*([\s\S]*)$/.exec(line);
+      const field = m && outlineFields.find(([, label]) => label === m[1].trim());
+      if (field) outline[field[0]] = clip(m[2].trim(), field[2]);
     }
-    requireThat(
-      record?.schema === snapshotMarker && record.phase === phase,
-      'Notionの記録形式・フェーズが不正です',
-      409,
-    );
-    return record;
-  }
-  applyRecord(ws, team, phase, r) {
-    if (phase === 2) {
-      requireThat(
-        Array.isArray(r.deck) && r.deck.length <= 5 && new Set(r.deck).size === r.deck.length,
-        'Notionのデッキは重複なし5枚以内です',
-        409,
-      );
-      this.importVotes(
-        ws,
-        'cards',
-        team.nodes.map((n) => n.id),
-        r.totals || {},
-      );
-      team.deck = r.deck.filter(
-        (id) => team.nodes.some((n) => n.id === id) && totals(ws, 'cards')[id] > 0,
-      );
-      if (r.deckSlots !== undefined) {
+    const image = section(sections.image)?.children.find((c) => c.type === 'image');
+    let votes = { cards: [], deck: [], ideaVotes: 0 };
+    const code = setting(settingTitles.votes)?.children.find((c) => c.type === 'code');
+    if (code?.text.trim()) {
+      try {
+        votes = { ...votes, ...JSON.parse(code.text) };
+      } catch {
         requireThat(
-          Array.isArray(r.deckSlots) &&
-            r.deckSlots.length === 5 &&
-            r.deckSlots.every(
-              (id) => id === null || (typeof id === 'string' && id.length <= 100),
-            ) &&
-            new Set(r.deckSlots.filter(Boolean)).size === r.deckSlots.filter(Boolean).length,
-          'Notionのデッキ配置が不正です',
+          false,
+          `「${teamName}」の投票結果のJSONが読めません。Notionで修正してください`,
           409,
         );
-        // The Notion deck list is master. A person may edit it without updating slot metadata.
-        team.deckSlots =
-          JSON.stringify(r.deckSlots.filter(Boolean)) === JSON.stringify(r.deck)
-            ? deckSlots({ ...team, deckSlots: r.deckSlots })
-            : [...team.deck, ...Array(5 - team.deck.length).fill(null)];
-      } else team.deckSlots = [...team.deck, ...Array(5 - team.deck.length).fill(null)];
-      if (typeof r.rootText === 'string' && [...r.rootText].length <= 500)
-        team.rootText = r.rootText;
-    }
-    if (phase === 3) {
-      requireThat(
-        r.discussion && typeof r.discussion === 'object',
-        'Notionの議論記録が不正です',
-        409,
-      );
-      for (const [key, max] of Object.entries({
-        transcript: 30000,
-        what: 40,
-        who: 40,
-        how: 120,
-        points: 5000,
-        keywords: 500,
-      })) {
-        requireThat(
-          typeof r.discussion[key] === 'string' && [...r.discussion[key]].length <= max,
-          `Notionの${key}の文字数・形式を確認してください`,
-          409,
-        );
-        team.discussion[key] = r.discussion[key];
-      }
-      if (r.discussion.rounds !== undefined) {
-        requireThat(
-          Array.isArray(r.discussion.rounds) && r.discussion.rounds.length <= 100,
-          '議論履歴は100回以内です',
-          409,
-        );
-        for (const round of r.discussion.rounds)
-          for (const [key, value] of Object.entries(round))
-            requireThat(
-              key === 'features'
-                ? Array.isArray(value) &&
-                    value.length <= 3 &&
-                    value.every(
-                      (s) => typeof s === 'string' && s.length <= 200 && !/[\r\n]/.test(s),
-                    )
-                : typeof value === 'string' && value.length <= 30000,
-              '議論履歴の形式を確認してください',
-              409,
-            );
-        team.discussion.rounds = r.discussion.rounds;
-      }
-      if (typeof r.discussion.running === 'boolean') team.discussion.running = r.discussion.running;
-      for (const [key, max] of Object.entries({ headline: 100, pressRelease: 2000 })) {
-        if (r.discussion[key] === undefined) continue;
-        requireThat(
-          typeof r.discussion[key] === 'string' && [...r.discussion[key]].length <= max,
-          `Notionの${key}の形式を確認してください`,
-          409,
-        );
-        team.discussion[key] = r.discussion[key];
-      }
-      if (r.discussion.features !== undefined) {
-        const values = r.discussion.features;
-        requireThat(
-          Array.isArray(values) &&
-            values.length <= 3 &&
-            values.every((s) => typeof s === 'string' && [...s].length <= 200 && !/[\r\n]/.test(s)),
-          'Notionの３つの特長の形式を確認してください',
-          409,
-        );
-        team.discussion.features = values;
       }
     }
-    if (phase === 4) this.importVotes(ws, 'ideas', [team.id], { [team.id]: r.totalVotes ?? 0 });
+    const prompt = (title) => {
+      const b = setting(title);
+      return b ? texts(b).join('\n\n').trim() : undefined;
+    };
+    const memo = section(sections.memo);
+    const data = {
+      world: world ? clip(world === '（未設定）' ? '' : world, 500) : '',
+      nodes,
+      press: clip(texts(section(sections.press)).join('\n\n').trim(), 2000),
+      outline,
+      memo: memo ? clip(texts(memo).join('\n\n').trim(), 30000) : undefined,
+      image: image
+        ? { blockId: image.id, url: image.url, key: /^image:(\w+)$/.exec(image.caption)?.[1] }
+        : null,
+      votes,
+      settings: {
+        facilitator: prompt(settingTitles.facilitator),
+        imagePrompt: prompt(settingTitles.imagePrompt),
+        pressPrompt: prompt(settingTitles.pressPrompt),
+      },
+    };
+    // Signed image URLs change on every read; fingerprint the block instead.
+    const stable = { ...data, image: data.image && { ...data.image, url: undefined } };
+    return { ...data, fp: hash(JSON.stringify(stable)) };
+  }
+  // Newest entry per team name, from the page's top-level toggles.
+  latestEntries(ws, top) {
+    const latest = {};
+    for (const team of Object.values(ws.teams))
+      for (const b of top)
+        if (b.type === 'toggle') {
+          const s = entryStamp(words(b), team.name);
+          if (s && (!latest[team.name] || s > latest[team.name].stamp))
+            latest[team.name] = { id: b.id, stamp: s };
+        }
+    return latest;
   }
   importVotes(ws, phase, ids, values) {
     ws.notionVoteBaseline ||= { cards: {}, ideas: {} };
@@ -487,740 +612,182 @@ export class NotionContent {
       ws.notionVoteBaseline[phase][id] = n;
     }
   }
-  async pull(ws, edited, force = false, { discardPending = false } = {}) {
-    if (
-      this.active.has(ws.id) ||
-      this.reading.has(ws.id) ||
-      (ws.documentSync?.pending && !discardPending)
-    )
-      return false;
-    const state = this.state(ws);
-    if (
-      !force &&
-      this.loaded.has(ws.id) &&
-      state?.edited === edited &&
-      Date.now() - (state.at || 0) < 60000
-    )
-      return true;
-    const original = structuredClone(ws);
-    const generation = ws.documentSync?.generation || 0;
-    const teamKeys = (w) => JSON.stringify(Object.values(w.teams).map((t) => [t.id, t.name]));
-    const superseded = () => {
-      const live = this.store.get('workshops', ws.id);
-      return (
-        this.active.has(ws.id) ||
-        (live &&
-          (teamKeys(live) !== teamKeys(original) ||
-            (live.documentSync?.generation || 0) !== generation ||
-            (!discardPending && live.documentSync?.pending)))
-      );
-    };
-    const restore = () => {
-      for (const key of Object.keys(ws)) delete ws[key];
-      Object.assign(ws, original);
-    };
-    this.reading.add(ws.id);
-    try {
-      const doc = await this.read(ws);
-      if (superseded()) return false;
-      if (!doc) {
-        this.loaded.add(ws.id);
-        ws.documentSync = {
-          generation,
-          pending: false,
-          error: 'Notionページに「① もやもやの言語化（N1）」の見出しを作成してください',
-        };
-        this.applyIncoming(ws, original);
-        return false;
-      }
-      const fp = this.fingerprint(doc);
-      if (state?.fingerprint !== fp) {
-        for (const team of Object.values(ws.teams)) {
-          const nodes = this.parseNodes(ws, doc, team);
-          if (!state && !this.store.get('kv', `notion-import-backup:${ws.id}:${team.id}`))
-            this.store.put('kv', `notion-import-backup:${ws.id}:${team.id}`, {
-              at: Date.now(),
-              team: structuredClone(team),
-            });
-          team.nodes = nodes;
-          team.mapVersion = 2;
-          for (const phase of [2, 3, 4]) {
-            const { code } = this.record(doc, team, phase),
-              r = this.parseRecord(code, phase);
-            const oldCode = state?.doc && this.record(state.doc, team, phase).code;
-            if (r && (!oldCode || words(oldCode) !== words(code)))
-              this.applyRecord(ws, team, phase, r);
-            if (r && phase === 3) await this.readImage(ws, doc, team, r, state);
-          }
-        }
-        const valid = new Set(Object.values(ws.teams).flatMap((t) => t.nodes.map((n) => n.id)));
-        requireThat(
-          valid.size === Object.values(ws.teams).reduce((sum, t) => sum + t.nodes.length, 0),
-          'Notionのチーム間でカードIDが重複しています',
-          409,
-        );
-        for (const team of Object.values(ws.teams))
-          team.deck = team.deck.filter((id) => valid.has(id));
-        for (const ballot of Object.values(ws.votes.cards))
-          for (const id of Object.keys(ballot)) if (!valid.has(id)) delete ballot[id];
-        ws.revision++;
-      }
-      if (superseded()) {
-        restore();
-        return false;
-      }
-      ws.documentSync = { at: Date.now(), generation, pending: false, error: null };
-      const nextState = { ...state, doc, fingerprint: fp, edited, at: Date.now() };
-      if (discardPending)
-        for (const field of [
-          'attempt',
-          'patchAttempt',
-          'archiveAttempt',
-          'sectionAttempt',
-          'recovered',
-        ])
-          delete nextState[field];
-      this.store.tx(() => {
-        this.save(ws, nextState);
-        this.applyIncoming(ws, original);
-        if (discardPending) this.store.del('kv', outboxKey(ws.id));
-      });
-      this.loaded.add(ws.id);
-      return true;
-    } catch (e) {
-      restore();
-      if (superseded()) return false;
-      ws.documentSync = { ...ws.documentSync, error: e.message };
-      this.applyIncoming(ws, original);
-      return false;
-    } finally {
-      this.reading.delete(ws.id);
-    }
-  }
-  remove(doc, id) {
-    for (const s of Object.values(doc.sections)) {
-      const prune = (list) =>
-        list.filter((b) => b.id !== id).map((b) => ({ ...b, children: prune(b.children) }));
-      s.roots = prune(s.roots);
-    }
-  }
-  async readImage(ws, doc, team, record, state) {
-    const wrapper = this.record(doc, team, 3).wrapper,
-      image = wrapper?.children.filter((b) => b.type === 'image').at(-1);
-    if (!image) {
-      if (record.imageKey === null) team.image = null;
-      return;
-    }
-    const oldImage =
-      state?.doc &&
-      this.record(state.doc, team, 3)
-        .wrapper?.children.filter((b) => b.type === 'image')
-        .at(-1);
-    if (team.image && oldImage?.id === image.id) return;
-    const url = new URL(
-      image.image.file?.url || image.image.external?.url || 'https://invalid.local',
-    );
+  async downloadImage(url) {
+    const u = new URL(url || 'https://invalid.local');
     requireThat(
-      url.protocol === 'https:' &&
-        /\.amazonaws\.com$|\.notion-static\.com$|\.notion\.so$/.test(url.hostname),
+      u.protocol === 'https:' &&
+        /\.amazonaws\.com$|\.notion-static\.com$|\.notion\.so$|\.notion\.com$/.test(u.hostname),
       'Notion画像はNotionへ直接アップロードしたPNGを使用してください',
       409,
     );
-    const response = await this.notion.transport(url, {
+    const response = await this.notion.transport(u, {
       method: 'GET',
       redirect: 'manual',
       signal: AbortSignal.timeout(20000),
     });
     requireThat(response.ok, 'Notion画像を読み込めませんでした', 502);
-    requireThat(
-      Number(response.headers?.get('content-length') || 0) < 9 * 1024 * 1024,
-      'Notion画像が大きすぎます',
-      409,
-    );
     const bytes = Buffer.from(await response.arrayBuffer());
     requireThat(bytes.length < 9 * 1024 * 1024, 'Notion画像が大きすぎます', 409);
-    team.image = validatePNG(bytes.toString('base64'));
+    return validatePNG(bytes.toString('base64'));
   }
-  add(doc, parentId, b, after) {
-    const parent = this.all(doc).find((x) => x.id === parentId);
-    const list = parent ? parent.children : doc.sections[b._phase || 1].roots;
-    if (after === null || (!parent && after === doc.sections[b._phase || 1].id)) list.unshift(b);
-    else if (after !== undefined) {
-      const index = list.findIndex((x) => x.id === after);
-      list.splice(index < 0 ? list.length : index + 1, 0, b);
-    } else list.push(b);
+  // Overwrite one team with the newest Notion entry.
+  async apply(ws, team, data, knownIds = {}) {
+    requireThat(data.nodes.length <= 500, 'Notionのトピックは班ごとに500件以内です', 409);
+    // Keep the app's card IDs where the entry or the board still knows them.
+    const byBlock = new Map(Object.entries(knownIds));
+    for (const c of [...(data.votes.cards || []), ...(data.votes.deck || [])])
+      if (c?.notionBlockId && typeof c.id === 'string' && c.id.length <= 100)
+        byBlock.set(c.notionBlockId, c.id);
+    for (const n of team.nodes)
+      if (n.notionBlockId && !byBlock.has(n.notionBlockId)) byBlock.set(n.notionBlockId, n.id);
+    const idOf = (blockId) => byBlock.get(blockId) || blockId;
+    team.nodes = data.nodes.map((n) => ({
+      id: idOf(n.blockId),
+      notionBlockId: n.blockId,
+      text: n.text,
+      parent: n.parent === 'theme' ? 'theme' : idOf(n.parent),
+      group: n.group,
+    }));
+    team.mapVersion = 2;
+    if (data.world) team.rootText = data.world;
+    const d = team.discussion;
+    d.pressRelease = data.press;
+    for (const key of ['headline', 'who', 'what', 'how', 'keywords'])
+      if (data.outline[key] !== undefined) d[key] = data.outline[key];
+    if (['feature1', 'feature2', 'feature3'].some((k) => data.outline[k] !== undefined))
+      d.features = ['feature1', 'feature2', 'feature3'].map((k) =>
+        (data.outline[k] || '').replace(/[\r\n]+/g, ' '),
+      );
+    if (data.memo !== undefined) d.transcript = data.memo;
+    const ids = new Set(team.nodes.map((n) => n.id));
+    const values = Object.fromEntries(team.nodes.map((n) => [n.id, 0]));
+    for (const c of data.votes.cards || []) {
+      const id = c?.notionBlockId ? idOf(c.notionBlockId) : c?.id;
+      const n = Number(/#VOTES:\s*(\d+)/.exec(c?.text || '')?.[1] ?? 0);
+      if (ids.has(id)) values[id] = n;
+    }
+    this.importVotes(ws, 'cards', Object.keys(values), values);
+    team.deck = (data.votes.deck || [])
+      .map((c) => (typeof c === 'string' ? c : c?.notionBlockId ? idOf(c.notionBlockId) : c?.id))
+      .filter((id) => ids.has(id))
+      .slice(0, 5);
+    team.deckSlots = [...team.deck, ...Array(5 - team.deck.length).fill(null)];
+    // Notion holds one number per team; each deck keeps its own votes, so only a changed
+    // number is imported, as the part not already held by the team's decks.
+    if (Number.isInteger(data.votes.ideaVotes) && data.votes.ideaVotes !== teamIdeaVotes(ws, team)) {
+      const held = teamIdeaVotes(ws, team) - (totals(ws, 'ideas')[team.id] || 0);
+      this.importVotes(ws, 'ideas', [team.id], { [team.id]: Math.max(0, data.votes.ideaVotes - held) });
+    }
+    if (!data.image) team.image = null;
+    else if (!(team.image && data.image.key && hash(team.image.base64) === data.image.key))
+      team.image = await this.downloadImage(data.image.url);
+    const s = data.settings;
+    const rows = [
+      ['ai:facilitator', s.facilitator],
+      ['ai:imagePrompt', s.imagePrompt],
+      ['ai:pressReleasePrompt', s.pressPrompt],
+    ]
+      .filter(([, value]) => value)
+      .map(([key, value]) => ({ key, value }));
+    if (rows.length) this.notion.settingsConsumer?.(rows);
   }
-  async append(ws, state, parentId, body, phase = 1, options = {}) {
-    const attempt = state.attempt;
-    if (attempt) {
-      const now = await this.notion.list(`blocks/${attempt.parentId}/children`);
-      const matches = now.filter(
-        (b) =>
-          !attempt.before.includes(b.id) &&
-          b.type === attempt.body.type &&
-          words(b) === words(attempt.body),
-      );
-      requireThat(
-        matches.length === 1,
-        'Notionの追加結果が未確定です。重複防止のため再追加せず停止しています。Notion側を確認してください',
-        409,
-      );
-      const b = { ...matches[0], parentId: attempt.parentId, children: [], _phase: attempt.phase };
-      this.add(state.doc, attempt.parentId, b, attempt.after);
-      if (attempt.nodeId) {
-        const node = Object.values(ws.teams)
-          .flatMap((t) => t.nodes)
-          .find((n) => n.id === attempt.nodeId);
-        if (node) node.notionBlockId = b.id;
-        this.store.put('workshops', ws.id, ws);
-      }
-      state.recovered = { key: attempt.key, blockId: b.id };
-      delete state.attempt;
-      this.save(ws, state);
-    }
-    const key = `${parentId}:${hash(JSON.stringify(body))}`;
-    if (state.recovered?.key === key) {
-      const recovered = this.all(state.doc).find((b) => b.id === state.recovered.blockId);
-      delete state.recovered;
-      this.save(ws, state);
-      return recovered;
-    }
-    const before = await this.notion.list(`blocks/${parentId}/children`);
-    const after =
-      options.after !== undefined
-        ? options.after
-        : parentId === ws.notion.pageId
-          ? this.lastInSection(state.doc, phase)
-          : undefined;
-    state.attempt = {
-      parentId,
-      body,
-      phase,
-      before: before.map((b) => b.id),
-      key,
-      after,
-      nodeId: options.nodeId,
-    };
-    this.save(ws, state);
-    let result;
+  // Read the newest entry of every team and restore the teams whose entry
+  // changed in Notion since the app last wrote or read it.
+  async pull(ws, edited, force = false, { discardPending = false } = {}) {
+    if (this.active.has(ws.id) || this.reading.has(ws.id)) return false;
+    const state = this.state(ws) || {};
+    if (!force && Date.now() - (state.at || 0) < 60000) return true;
+    this.reading.add(ws.id);
     try {
-      result = await this.notion.call(`blocks/${parentId}/children`, 'PATCH', {
-        children: [body],
-        ...(after !== undefined
-          ? {
-              position:
-                after === null
-                  ? { type: 'start' }
-                  : { type: 'after_block', after_block: { id: after } },
-            }
-          : {}),
-        notifications: { mode: 'silent' },
-      });
-    } catch (e) {
-      if (e.notionStatus >= 400 && e.notionStatus < 500 && e.notionStatus !== 408) {
-        delete state.attempt;
-        this.save(ws, state);
+      const top = await this.topBlocks(ws);
+      const latest = this.latestEntries(ws, top);
+      const changed = [];
+      state.entries ||= {};
+      for (const [name, entry] of Object.entries(latest)) {
+        const data = this.parse(await this.readTree(entry.id), name);
+        const known = state.entries[name];
+        if (force || !known || known.id !== entry.id || known.fp !== data.fp)
+          changed.push({ name, entry, data });
       }
-      throw e;
-    }
-    let created = (result.results || []).filter(
-      (b) =>
-        !state.attempt.before.includes(b.id) && b.type === body.type && words(b) === words(body),
-    );
-    if (created.length !== 1)
-      created = (await this.notion.list(`blocks/${parentId}/children`)).filter(
-        (b) =>
-          !state.attempt.before.includes(b.id) && b.type === body.type && words(b) === words(body),
-      );
-    requireThat(created.length === 1, 'Notionの追加結果が未確定です', 502);
-    const block = { ...created[0], parentId, children: [], _phase: phase };
-    this.add(state.doc, parentId, block, after);
-    if (options.nodeId) {
-      const node = Object.values(ws.teams)
-        .flatMap((t) => t.nodes)
-        .find((n) => n.id === options.nodeId);
-      if (node) node.notionBlockId = block.id;
-      this.store.put('workshops', ws.id, ws);
-    }
-    delete state.attempt;
-    this.save(ws, state);
-    return block;
-  }
-  lastInSection(doc, phase) {
-    const s = doc.sections[phase];
-    return s.roots.at(-1)?.id || s.id;
-  }
-  async patch(ws, state, block, body) {
-    const current = await this.notion.call(`blocks/${block.id}`);
-    requireThat(
-      current.type === block.type && words(current) === words(block),
-      'Notionの同じ項目が変更されました。Notionから再読込みしてください',
-      409,
-    );
-    state.patchAttempt = { id: block.id, body };
-    this.save(ws, state);
-    await this.notion.call(`blocks/${block.id}`, 'PATCH', body);
-    applyBlockUpdate(block, body);
-    delete state.patchAttempt;
-    this.save(ws, state);
-  }
-  async archive(ws, state, block) {
-    if (block.children.length) {
-      const children = await this.notion.list(`blocks/${block.id}/children`);
-      requireThat(
-        JSON.stringify(children.map((b) => b.id)) ===
-          JSON.stringify(block.children.map((b) => b.id)),
-        'Notionで子の項目が変更されています。再読込みしてください',
-        409,
-      );
-    }
-    state.archiveAttempt = { id: block.id, parentId: block.parentId };
-    this.save(ws, state);
-    await this.notion.call(`blocks/${block.id}`, 'PATCH', { in_trash: true });
-    this.remove(state.doc, block.id);
-    delete state.archiveAttempt;
-    this.save(ws, state);
-  }
-  async ensureSection(ws, state, phase) {
-    if (state.doc.sections[phase]) {
-      const heading = state.doc.sections[phase].heading;
-      if (words(heading) !== stageTitles[phase - 1])
-        await this.patch(ws, state, heading, {
-          [heading.type]: {
-            rich_text: rt(stageTitles[phase - 1]),
-            color: 'green_background',
-            is_toggleable: false,
-          },
-        });
-      return;
-    }
-    const previous =
-      Object.keys(state.doc.sections)
-        .map(Number)
-        .filter((p) => p < phase)
-        .at(-1) || 1;
-    if (state.sectionAttempt) {
-      const top = await this.notion.list(`blocks/${ws.notion.pageId}/children`);
-      const found = top.filter((b) => phaseOf(b) === state.sectionAttempt);
-      requireThat(
-        found.length === 1,
-        '見出しの追加結果が未確定です。Notion側を確認してください',
-        409,
-      );
-      const b = found[0];
-      state.doc.sections[state.sectionAttempt] = { id: b.id, heading: b, roots: [] };
-      delete state.sectionAttempt;
-      this.save(ws, state);
-      if (state.doc.sections[phase]) return;
-    }
-    state.sectionAttempt = phase;
-    this.save(ws, state);
-    const result = await this.notion.call(`blocks/${ws.notion.pageId}/children`, 'PATCH', {
-      children: [
-        {
-          object: 'block',
-          type: 'heading_2',
-          heading_2: {
-            rich_text: rt(stageTitles[phase - 1]),
-            color: 'green_background',
-            is_toggleable: false,
-          },
-        },
-      ],
-      position: {
-        type: 'after_block',
-        after_block: { id: this.lastInSection(state.doc, previous) },
-      },
-      notifications: { mode: 'silent' },
-    });
-    const b =
-      (result.results || []).find((b) => phaseOf(b) === phase) ||
-      (await this.notion.list(`blocks/${ws.notion.pageId}/children`)).find(
-        (b) => phaseOf(b) === phase,
-      );
-    requireThat(b, 'Notionの見出し追加結果が未確定です', 502);
-    state.doc.sections[phase] = { id: b.id, heading: b, roots: [] };
-    delete state.sectionAttempt;
-    this.save(ws, state);
-  }
-  async writeMap(ws, state, team) {
-    // Capture the legacy roots before creating the team's wrapper. During a
-    // resumable copy, both old and new blocks can temporarily share a logical ID.
-    const oldNodes = this.parseNodes(ws, state.doc, team, true);
-    let container = state.doc.sections[1].roots.find((b) => teamName(b) === team.name)?.id;
-    if (!container) {
-      const wrapper = await this.append(
-        ws,
-        state,
-        ws.notion.pageId,
-        payload('toggle', `チーム：${team.name}`),
-      );
-      container = wrapper.id;
-    }
-    const oldById = new Map(),
-      all = this.all(state.doc),
-      byBlock = new Map(all.map((b) => [b.id, b]));
-    for (const n of oldNodes)
-      if (
-        !oldById.has(n.id) ||
-        n.notionBlockId === team.nodes.find((d) => d.id === n.id)?.notionBlockId
-      )
-        oldById.set(n.id, n);
-    const desiredIds = new Set(team.nodes.map((n) => n.id)),
-      retained = new Set(),
-      stale = new Set();
-    const checkSafe = (b) => {
-      requireThat(
-        textTypes.has(b.type),
-        '画像や未対応ブロックを含む枝の構造変更はNotion側で行ってください',
-        409,
-      );
-      for (const c of b.children) checkSafe(c);
-    };
-    const visit = async (parent, blockParent, recreate = false) => {
-      const nodes = team.nodes.filter((n) =>
-        parent === 'theme' ? n.parent === 'theme' || n.parent === null : n.parent === parent,
-      );
-      // Notion cannot reposition an existing block through append. Keep the
-      // largest in-order branches and copy only the branches that must move.
-      const siblings =
-        this.all(state.doc).find((b) => b.id === blockParent)?.children ||
-        state.doc.sections[1].roots;
-      const candidates = nodes
-        .map((n) => {
-          const original = byBlock.get(oldById.get(n.id)?.notionBlockId);
-          return {
-            id: n.id,
-            at: siblings.findIndex((b) => b.id === original?.id),
-            weight: original ? this.descendantBlocks(original).length + 1 : 0,
-            original,
-          };
-        })
-        .filter(
-          (n) =>
-            !recreate &&
-            n.at >= 0 &&
-            n.original.parentId === blockParent &&
-            n.original.type === 'toggle',
-        );
-      const scores = [],
-        paths = [];
-      for (let i = 0; i < candidates.length; i++) {
-        let best = -1;
-        for (let j = 0; j < i; j++)
-          if (candidates[j].at < candidates[i].at && (best < 0 || scores[j] > scores[best]))
-            best = j;
-        scores[i] = candidates[i].weight + (best < 0 ? 0 : scores[best]);
-        paths[i] = [...(best < 0 ? [] : paths[best]), candidates[i].id];
+      if (discardPending) this.store.del('kv', outboxKey(ws.id));
+      const live = this.store.get('workshops', ws.id) || ws;
+      let applied = false;
+      for (const c of changed) {
+        const team = Object.values(live.teams).find((t) => t.name === c.name);
+        if (!team) continue;
+        const known = state.entries[c.name];
+        await this.apply(live, team, c.data, known?.id === c.entry.id ? known.ids : {});
+        state.entries[c.name] = {
+          id: c.entry.id,
+          stamp: c.entry.stamp,
+          fp: c.data.fp,
+          ids: Object.fromEntries(team.nodes.map((n) => [n.notionBlockId, n.id])),
+        };
+        applied = true;
       }
-      const keepOrder = new Set(scores.length ? paths[scores.indexOf(Math.max(...scores))] : []);
-      let previous = blockParent === ws.notion.pageId ? state.doc.sections[1].id : null;
-      for (const n of nodes) {
-        const old = oldById.get(n.id),
-          original = old && byBlock.get(old.notionBlockId);
-        let b = original;
-        const changedParent = original && original.parentId !== blockParent;
-        if (
-          !original ||
-          recreate ||
-          changedParent ||
-          original.type !== 'toggle' ||
-          !keepOrder.has(n.id)
-        ) {
-          if (original) checkSafe(original);
-          b = await this.append(
-            ws,
-            state,
-            blockParent,
-            payload('toggle', n.text, colors[n.group]),
-            1,
-            {
-              nodeId: n.id,
-              after: previous,
-            },
-          );
-          n.notionBlockId = b.id;
-          if (original) stale.add(original.id);
-        } else if (
-          words(b) !== n.text ||
-          Math.max(0, colors.indexOf(b[b.type]?.color)) !== n.group
-        ) {
-          await this.patch(ws, state, b, {
-            [b.type]: { rich_text: rt(n.text), color: colors[n.group] },
-          });
-        }
-        retained.add(b.id);
-        previous = b.id;
-        await visit(n.id, b.id, b.id !== original?.id);
-      }
-    };
-    await visit('theme', container);
-    for (const old of oldNodes)
-      if (!retained.has(old.notionBlockId)) {
-        const b = this.all(state.doc).find((b) => b.id === old.notionBlockId);
-        if (b) {
-          checkSafe(b);
-          requireThat(
-            !this.descendantBlocks(b).some((c) => retained.has(c.id)),
-            '子の枝を保護するためNotionへの削除を停止しました',
-            409,
-          );
-          await this.archive(ws, state, b);
-        }
-      }
-  }
-  descendantBlocks(b) {
-    return b.children.flatMap((c) => [c, ...this.descendantBlocks(c)]);
-  }
-  stageRecord(ws, team, phase) {
-    const base = { schema: snapshotMarker, phase, team: team.name };
-    if (phase === 2)
-      return {
-        ...base,
-        rootText: team.rootText || ws.theme,
-        cards: team.nodes.map((n) => ({
-          id: n.id,
-          notionBlockId: n.notionBlockId,
-          text: n.text,
-          group: n.group,
-        })),
-        totals: Object.fromEntries(team.nodes.map((n) => [n.id, totals(ws, 'cards')[n.id] || 0])),
-        deck: team.deck,
-        deckSlots: deckSlots(team),
-        budget: ws.budgets.cards,
+      if (applied) live.revision++;
+      const queued = this.outbox(ws.id).length > 0;
+      const s = live.documentSync || {};
+      live.documentSync = {
+        ...s,
+        queued,
+        pending: queued,
+        readError: null,
+        ...(discardPending
+          ? { error: null, retryAt: 0, retries: 0, retryable: false }
+          : { error: s.error ?? null }),
       };
-    if (phase === 3)
-      return {
-        ...base,
-        deck: team.deck,
-        discussion: Object.fromEntries(
-          [
-            'transcript',
-            'headline',
-            'features',
-            'pressRelease',
-            'what',
-            'who',
-            'how',
-            'points',
-            'keywords',
-            'rounds',
-            'running',
-          ].map((k) => [k, team.discussion[k]]),
-        ),
-        imageKey: team.image ? hash(team.image.base64) : null,
-      };
-    return { ...base, totalVotes: totals(ws, 'ideas')[team.id] || 0, budget: ws.budgets.ideas };
-  }
-  async writeRecord(ws, state, team, phase) {
-    await this.ensureSection(ws, state, phase);
-    let { wrapper, code } = this.record(state.doc, team, phase);
-    if (!wrapper)
-      wrapper = await this.append(
-        ws,
-        state,
-        ws.notion.pageId,
-        payload('toggle', `チーム：${team.name}`),
-        phase,
-      );
-    const record = this.stageRecord(ws, team, phase),
-      data = JSON.stringify(record, null, 2);
-    requireThat(data.length < 160000, 'Notionの記録が大きすぎます', 409);
-    const body = {
-      object: 'block',
-      type: 'code',
-      code: { rich_text: rt(data), language: 'json', caption: rt(snapshotMarker) },
-    };
-    if (!code) code = await this.append(ws, state, wrapper.id, body, phase);
-    else if (words(code) !== data) await this.patch(ws, state, code, { code: body.code });
-    const summary =
-      phase === 2
-        ? `記録：${team.nodes.length}枚のカード／選択 ${team.deck.length}枚／合計 ${Object.values(record.totals).reduce((a, b) => a + b, 0)}票`
-        : phase === 3
-          ? `記録：WHAT ${team.discussion.what || '未記入'}／WHO ${team.discussion.who || '未記入'}／HOW ${team.discussion.how || '未記入'}`
-          : `記録：アイデアへの投票 ${record.totalVotes}票`;
-    const p = wrapper.children.find((b) => b.type === 'paragraph' && words(b).startsWith('記録：'));
-    if (p) {
-      if (words(p) !== summary)
-        await this.patch(ws, state, p, { paragraph: { rich_text: rt(summary) } });
-    } else await this.append(ws, state, wrapper.id, payload('paragraph', summary), phase);
-    if (phase === 3 && team.image) {
-      const oldKey = state.imageKeys?.[team.id];
-      const marker = `Workshop image ${record.imageKey}`;
-      const found = wrapper.children.some(
-        (b) =>
-          b.type === 'image' &&
-          (b.image.caption || []).some((x) => (x.text?.content || x.plain_text) === marker),
-      );
-      if (oldKey !== record.imageKey && !found) {
-        const upload = await this.notion.call('file_uploads', 'POST', {
-          mode: 'single_part',
-          filename: `${team.id}.png`,
-          content_type: 'image/png',
-        });
-        const form = new FormData();
-        form.append(
-          'file',
-          new Blob([Buffer.from(team.image.base64, 'base64')], { type: 'image/png' }),
-          `${team.id}.png`,
-        );
-        await this.notion.call(`file_uploads/${upload.id}/send`, 'POST', form);
-        await this.append(
-          ws,
-          state,
-          wrapper.id,
-          {
-            object: 'block',
-            type: 'image',
-            image: { type: 'file_upload', file_upload: { id: upload.id }, caption: rt(marker) },
-          },
-          phase,
-        );
-        state.imageKeys ||= {};
-        state.imageKeys[team.id] = record.imageKey;
-        this.save(ws, state);
-      }
-    }
-  }
-  async push(ws, { verified = false } = {}) {
-    const state = this.state(ws);
-    requireThat(state?.doc, 'Notionの①見出しを確認して同期してください', 409);
-    try {
-      if (state.patchAttempt) {
-        const a = state.patchAttempt,
-          b = this.all(state.doc).find((b) => b.id === a.id),
-          fresh = await this.notion.call(`blocks/${a.id}`);
-        const desired = { ...b, ...a.body };
-        if (
-          words(fresh) === words(desired) &&
-          fresh[fresh.type]?.color === desired[desired.type]?.color
-        ) {
-          applyBlockUpdate(b, a.body);
-          delete state.patchAttempt;
-          this.save(ws, state);
-        } else await this.patch(ws, state, b, a.body);
-      }
-      if (state.archiveAttempt) {
-        const a = state.archiveAttempt,
-          children = await this.notion.list(`blocks/${a.parentId}/children`);
-        if (children.some((b) => b.id === a.id))
-          await this.archive(
-            ws,
-            state,
-            this.all(state.doc).find((b) => b.id === a.id),
-          );
-        else {
-          this.remove(state.doc, a.id);
-          delete state.archiveAttempt;
-          this.save(ws, state);
-        }
-      }
-      if (state.attempt) {
-        const a = state.attempt;
-        await this.append(ws, state, a.parentId, a.body, a.phase);
-      }
-      if (state.sectionAttempt) await this.ensureSection(ws, state, state.sectionAttempt);
-      const fresh = verified ? state.doc : await this.read(ws);
-      requireThat(
-        fresh && this.fingerprint(fresh) === this.fingerprint(state.doc),
-        'Notionが別途更新されました。内容を確認してから再読込みしてください',
-        409,
-      );
-      for (const team of Object.values(ws.teams)) await this.writeMap(ws, state, team);
-      for (const team of Object.values(ws.teams))
-        for (const phase of [2, 3, 4]) await this.writeRecord(ws, state, team, phase);
-      const page = await this.notion.call(`pages/${ws.notion.pageId}`);
-      ws.notion.baseEdited = page.last_edited_time;
-      state.edited = null;
-      state.fingerprint = this.fingerprint(state.doc);
       state.at = Date.now();
       this.save(ws, state);
-      ws.documentSync = {
-        at: Date.now(),
-        generation: ws.documentSync?.generation || 0,
-        pending: false,
-        error: null,
-      };
+      this.store.put('workshops', live.id, live);
+      for (const key of Object.keys(ws)) delete ws[key];
+      Object.assign(ws, live);
+      return true;
     } catch (e) {
-      ws.documentSync = {
-        ...ws.documentSync,
-        queued: false,
-        syncing: false,
-        pending: true,
-        error: e.message,
-      };
+      const live = this.store.get('workshops', ws.id);
+      if (live) {
+        // A restore problem must not stop new saves from being sent.
+        live.documentSync = { ...live.documentSync, readError: e.message };
+        this.store.put('workshops', live.id, live);
+        ws.documentSync = live.documentSync;
+      }
+      return false;
+    } finally {
+      this.reading.delete(ws.id);
     }
-    this.store.put('workshops', ws.id, ws);
+  }
+  preserveIncoming(ws, baseline, metadataOnly = false) {
+    const live = this.store.get('workshops', ws.id);
+    if (!live) return false;
+    if (metadataOnly || this.active.has(ws.id) || live.documentSync?.queued) {
+      preserveLocalContent(ws, live);
+      return true;
+    }
+    return false;
+  }
+  // ---- Board changes -----------------------------------------------------
+  async change(user, wsId, body, { now = Date.now() } = {}) {
+    const p = body.payload || {};
+    // The deck being left (with its unsent edits) is recorded before it is replaced.
+    let leaving = null;
+    if (['clearIdea', 'restoreIdea'].includes(body.action)) {
+      const before = structuredClone(this.store.get('workshops', wsId) || {}),
+        team = before.teams?.[p.teamId];
+      if (before.notion && team && !(body.action === 'restoreIdea' && team.activeIdeaId === p.ideaId)) {
+        try {
+          patchDiscussion(team, p);
+        } catch {}
+        if (hasDeckContent(team)) leaving = this.capture(before, team, now);
+      }
+    }
+    let ws = mutate(this.store, user, wsId, body);
+    if (!ws.notion) return ws;
+    if (leaving) ws = this.schedule(ws, p.teamId, 'save', now, leaving);
+    if ((body.action === 'discussion' && p.snapshot === true) || body.action === 'saveIdea')
+      return this.schedule(ws, p.teamId, 'save', now);
+    if ((body.action === 'discussion' && !p.draftOnly) || body.action === 'deck')
+      return this.schedule(ws, p.teamId, 'auto', now);
+    if (body.action === 'settings') return this.scheduleSettings(ws, now);
     return ws;
-  }
-  async change(user, wsId, body, { immediate = false, now = Date.now() } = {}) {
-    let ws = this.store.get('workshops', wsId);
-    if (!ws.notion) return mutate(this.store, user, wsId, body);
-    if (!immediate) {
-      requireThat(this.state(ws)?.doc, 'Notionの①見出しを確認して同期してください', 409);
-      const revision = ws.revision;
-      ws = mutate(this.store, user, wsId, body);
-      return ws.revision === revision ? ws : this.schedule(ws, now);
-    }
-    requireThat(
-      !ws.documentSync?.pending,
-      'Notionへの未同期操作があります。同期を再試行してください',
-      409,
-    );
-    const before = ws.revision,
-      state = this.state(ws),
-      p = body.payload || {};
-    const node = Object.values(ws.teams)
-      .flatMap((t) => t.nodes)
-      .find((n) => n.id === p.id);
-    const fast =
-      state?.doc &&
-      (['vote', 'discussion', 'deck', 'topicTheme', 'createTopic'].includes(body.action) ||
-        (body.action === 'node' && node && p.parent === undefined));
-    if (fast) {
-      const checks = [];
-      if (body.action === 'node' && node?.notionBlockId)
-        checks.push(this.all(state.doc).find((b) => b.id === node.notionBlockId));
-      const team =
-        ws.teams[p.teamId] ||
-        Object.values(ws.teams).find(
-          (t) =>
-            body.action === 'vote' &&
-            (p.phase === 'ideas' ? t.id === p.target : t.nodes.some((n) => n.id === p.target)),
-        );
-      const phase =
-        body.action === 'discussion' ? 3 : body.action === 'vote' && p.phase === 'ideas' ? 4 : 2;
-      if (team) checks.push(this.record(state.doc, team, phase).code);
-      let changed = false;
-      for (const b of checks.filter(Boolean)) {
-        const current = await this.notion.call(`blocks/${b.id}`);
-        if (words(current) !== words(b) || current[current.type]?.color !== b[b.type]?.color)
-          changed = true;
-      }
-      if (changed) {
-        await this.pull(ws, undefined, true);
-        this.store.put('workshops', ws.id, ws);
-        requireThat(false, 'Notion側の変更を読み込みました。最新の内容を確認してください', 409);
-      }
-    } else await this.pull(ws, undefined, true);
-    this.store.put('workshops', ws.id, ws);
-    requireThat(
-      !ws.documentSync?.error,
-      ws.documentSync?.error || 'Notionの記録を確認してください',
-      409,
-    );
-    requireThat(
-      ws.revision === before,
-      'Notion側に更新があったため読み込みました。最新の内容を確認して再操作してください',
-      409,
-    );
-    ws = mutate(this.store, user, wsId, body);
-    if (!this.state(ws)?.doc) return ws;
-    ws.documentSync = { ...ws.documentSync, pending: true, error: null };
-    this.store.put('workshops', ws.id, ws);
-    return this.push(ws, { verified: true });
-  }
-  async retry(ws) {
-    return this.flushScheduled(ws.id, Date.now(), true);
   }
 }

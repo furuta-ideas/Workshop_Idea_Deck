@@ -11,6 +11,9 @@ import { Notion } from './notion.js';
 import { validatePNG } from './png.js';
 import { Facilitator } from './facilitator.js';
 import { captureMap, recordMapUndo } from './map-history.js';
+import { audioType } from './audio.js';
+import { Join } from './join.js';
+import { ideaById, ideaImageKey, markIdeaDraft, saveIdea } from './ideas.js';
 import {
   Fault,
   requireThat,
@@ -67,6 +70,7 @@ export function createApp(config = configuration(), overrides = {}) {
     ai = new AI(store, config, overrides.aiTransport),
     notion = new Notion(store, config, overrides.notionTransport);
   const facilitator = new Facilitator(store, config, ai);
+  const joining = new Join(store, auth, config, notion);
   if (config.adminEmail && !store.get('users', config.adminEmail))
     store.put('users', config.adminEmail, {
       id: id(),
@@ -75,6 +79,50 @@ export function createApp(config = configuration(), overrides = {}) {
       passkeys: [],
       ...(config.adminPassword ? { password: passwordHash(config.adminPassword) } : {}),
     });
+  // AI settings are written into every Notion history entry (設定情報) and
+  // read back from the newest entry when they were edited in Notion.
+  // Global settings changed: refresh 「設定情報（アプリの最新設定）」 on every Notion-linked workshop.
+  const settingsChanged = () => {
+    for (const w of store.all('workshops')) if (w.notion && !w.deleted) notion.content.scheduleSettings(w);
+  };
+  notion.settingsProvider = () => {
+    const s = ai.settings();
+    return [
+      {
+        key: 'ai:pressReleasePrompt',
+        label: '模擬プレスリリース作成用プロンプト',
+        value: s.pressReleasePrompt,
+      },
+      { key: 'ai:imagePrompt', label: '企画提案シート作成用プロンプト', value: s.imagePrompt },
+      { key: 'ai:model', label: 'AIモデル（空欄＝Genspark既定）', value: s.model },
+      { key: 'ai:imageModel', label: '画像モデル（企画提案シート）', value: s.imageModel },
+      {
+        key: 'ai:facilitator',
+        label: 'AIファシリテータの動作（md）',
+        value: facilitator.document(),
+      },
+    ];
+  };
+  notion.settingsConsumer = (rows) => {
+    const value = (key) => rows.find((r) => r.key === key)?.value;
+    const current = ai.settings();
+    const next = {
+      ...current,
+      ...(value('ai:pressReleasePrompt') !== undefined
+        ? { pressReleasePrompt: value('ai:pressReleasePrompt') }
+        : {}),
+      ...(value('ai:imagePrompt') !== undefined ? { imagePrompt: value('ai:imagePrompt') } : {}),
+      ...(value('ai:model') !== undefined ? { model: value('ai:model') } : {}),
+    };
+    try {
+      if (JSON.stringify(next) !== JSON.stringify(current)) ai.save(next);
+      const md = value('ai:facilitator');
+      if (md && md !== facilitator.document())
+        facilitator.save({ version: facilitator.settings().version, markdown: md }, 'notion');
+    } catch (e) {
+      console.error('Notion settings ignored:', e.message);
+    }
+  };
   let remoteWrite = false;
   const available = () =>
     requireThat(
@@ -148,7 +196,11 @@ export function createApp(config = configuration(), overrides = {}) {
           '/fonts/BIZUDPGothic-Regular.ttf': 'public/fonts/BIZUDPGothic-Regular.ttf',
           '/fonts/BIZUDPGothic-Bold.ttf': 'public/fonts/BIZUDPGothic-Bold.ttf',
         };
-        const file = assets[path];
+        const file =
+          assets[path] ||
+          (/^\/characters\/(kashi|leafy)-(idle|thinking|speaking|insight)\.png$/.test(path)
+            ? 'public' + path
+            : undefined);
         requireThat(file && existsSync(join(root, file)), 'ファイルがありません', 404);
         res.setHeader(
           'Content-Type',
@@ -196,7 +248,20 @@ export function createApp(config = configuration(), overrides = {}) {
             /* Persisted sync state is shown after login. */
           }
         }
-        json(res, await auth.start(body, ip));
+        json(res, await auth.start(body, ip, req, res));
+        return;
+      }
+      if (path === '/api/join/start' && req.method === 'POST') {
+        json(res, await joining.start(body, ip));
+        return;
+      }
+      if (path === '/api/join/verify' && req.method === 'POST') {
+        rateLimit(store, `join-verify:${ip}`, 40, 600000);
+        json(res, joining.verify(body, res));
+        return;
+      }
+      if (path === '/api/join/status' && req.method === 'GET') {
+        json(res, joining.status(req, res));
         return;
       }
       if (path === '/api/auth/verify' && req.method === 'POST') {
@@ -247,6 +312,8 @@ export function createApp(config = configuration(), overrides = {}) {
           ai: ai.publicSettings(),
           facilitator: facilitator.settings(),
           notion: user.admin ? notion.status() : notion.connectionState(),
+          // Admins see the remaining Genspark credits; refreshed at most every 5 minutes.
+          credit: user.admin && ai.gskKey() ? (void ai.refreshCredit(), ai.creditStatus()) : undefined,
         });
         return;
       }
@@ -271,7 +338,20 @@ export function createApp(config = configuration(), overrides = {}) {
       }
       if (path === '/api/ai/settings' && req.method === 'POST') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
-        json(res, ai.save(body));
+        const saved = ai.save(body);
+        settingsChanged();
+        json(res, saved);
+        return;
+      }
+      if (path === '/api/ai/diagnose' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        rateLimit(store, `ai-diagnose:${user.email}`, 10, 600000);
+        json(res, await ai.diagnose());
+        return;
+      }
+      if (path === '/api/ai/image-models' && req.method === 'GET') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        json(res, await ai.imageModels());
         return;
       }
       if (path === '/api/ai/connect' && req.method === 'POST') {
@@ -280,12 +360,26 @@ export function createApp(config = configuration(), overrides = {}) {
         json(res, await ai.connect(body.apiKey));
         return;
       }
+      if (path === '/api/ai/login/start' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        rateLimit(store, `ai-login:${user.email}`, 5, 600000);
+        json(res, await ai.beginLogin(user.email));
+        return;
+      }
+      if (path === '/api/ai/login/poll' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        requireThat(
+          typeof body.requestId === 'string' && body.requestId.length <= 100,
+          '認証IDが不正です',
+        );
+        json(res, await ai.finishLogin(body.requestId, user.email));
+        return;
+      }
       if (path === '/api/facilitator') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
-        json(
-          res,
-          req.method === 'POST' ? facilitator.save(body, user.email) : facilitator.settings(true),
-        );
+        const result = req.method === 'POST' ? facilitator.save(body, user.email) : facilitator.settings(true);
+        if (req.method === 'POST') settingsChanged();
+        json(res, result);
         return;
       }
       if (path === '/api/facilitator/export' && req.method === 'GET') {
@@ -371,8 +465,59 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'advice' && req.method === 'POST') {
-        rateLimit(store, `facilitation:${user.email}`, 40, 600000);
+        rateLimit(store, `facilitation:${user.email}`, 40, 600000, { memory: true });
         json(res, await facilitator.advise(ws, user, body));
+        return;
+      }
+      if (route === 'join-requests' && req.method === 'GET') {
+        json(res, joining.pending(ws, user));
+        return;
+      }
+      if (route === 'join-approve' && req.method === 'POST') {
+        available();
+        json(res, await remote(() => joining.decide(ws, user, body)));
+        return;
+      }
+      if (route === 'qr-data' && req.method === 'GET') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        json(res, {
+          dataUrl: await QRCode.toDataURL(`${config.origin}/?join=${encodeURIComponent(ws.id)}`, {
+            width: 600,
+            margin: 3,
+            errorCorrectionLevel: 'M',
+          }),
+        });
+        return;
+      }
+      if (route === 'idea-image' && req.method === 'GET') {
+        const found = ideaById(ws, url.searchParams.get('idea')),
+          image = found?.idea.image && store.get('kv', ideaImageKey(ws.id, found.idea.image.key));
+        requireThat(image, '画像がありません', 404);
+        res.setHeader('Content-Type', 'image/png');
+        res.end(Buffer.from(image.base64, 'base64'));
+        return;
+      }
+      if (route === 'idea-restore' && req.method === 'POST') {
+        access(store, ws, user, true);
+        teamFor(ws, user, body.teamId);
+        let source = 'saved-pending';
+        if (ws.notion && !ws.documentSync?.pending && !notion.content.active.has(ws.id)) {
+          await notion.content.pull(ws, undefined, true);
+          ws = store.get('workshops', ws.id);
+          source = 'notion';
+          requireThat(
+            !ws.documentSync?.error,
+            ws.documentSync?.error || 'Notionの記録を読み込めません',
+            409,
+          );
+        }
+        const restored = mutate(store, user, ws.id, {
+          action: 'restoreIdea',
+          payload: { teamId: body.teamId, ideaId: body.ideaId },
+          revision: ws.revision,
+          requestId: body.requestId,
+        });
+        json(res, { ...view(restored, user), restoreSource: source });
         return;
       }
       if (route === 'advice-feedback' && req.method === 'POST') {
@@ -453,7 +598,7 @@ export function createApp(config = configuration(), overrides = {}) {
       if (route === 'qr' && req.method === 'GET') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
         res.setHeader('Content-Type', 'image/png');
-        res.end(await QRCode.toBuffer(`${config.origin}/?workshop=${encodeURIComponent(ws.id)}`));
+        res.end(await QRCode.toBuffer(`${config.origin}/?join=${encodeURIComponent(ws.id)}`));
         return;
       }
       if (route === 'publish' && req.method === 'POST') {
@@ -506,9 +651,7 @@ export function createApp(config = configuration(), overrides = {}) {
         };
         if (body.task === 'transcribe') {
           requireThat(
-            ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/webm;codecs=opus'].includes(
-              body.mimeType,
-            ) &&
+            audioType(body.mimeType).extension &&
               typeof body.audio === 'string' &&
               body.audio.length < 8 * 1024 * 1024 &&
               ['map', 'discussion'].includes(body.destination),
@@ -520,7 +663,8 @@ export function createApp(config = configuration(), overrides = {}) {
         ws = store.get('workshops', wsId);
         access(store, ws, user, true);
         teamFor(ws, user, body.teamId);
-        requireThat(ws.revision === revision, 'AI処理中に更新されました。再実行してください', 409);
+        // Image generation takes minutes and other teams keep editing meanwhile, so a
+        // workshop-wide revision change must not throw the (already paid) result away.
         const proposal = id();
         store.put('challenges', proposal, {
           type: 'ai',
@@ -543,14 +687,19 @@ export function createApp(config = configuration(), overrides = {}) {
           p?.type === 'ai' && p.email === user.email && p.wsId === wsId && p.expires > Date.now(),
           '提案が無効または期限切れです',
         );
-        requireThat(ws.revision === p.revision, '別の更新があるため再実行してください', 409);
         const team = teamFor(ws, user, p.teamId),
           r = p.result;
         const mapBefore = captureMap(ws, team);
         if (p.task === 'image') {
-          team.image = validatePNG(r.pngBase64);
-          if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[team.id];
-          for (const ballot of Object.values(ws.votes.ideas)) delete ballot[team.id];
+          // Non-PNG results (JPEG/WebP) arrive converted to PNG by the reviewing browser.
+          team.image = validatePNG(typeof r.pngBase64 === 'string' ? r.pngBase64 : body.pngBase64);
+          // The image belongs to the current deck, which ④ shows as its own entry; a new
+          // image starts that deck's votes again.
+          const idea = saveIdea(store, ws, team);
+          for (const key of [team.id, idea.id]) {
+            if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[key];
+            for (const ballot of Object.values(ws.votes.ideas)) delete ballot[key];
+          }
         } else if (p.task === 'transcribe') {
           if (p.destination === 'map') {
             requireThat(team.nodes.length < 500, '項目は500件以内です');
@@ -599,9 +748,15 @@ export function createApp(config = configuration(), overrides = {}) {
         ws.revision++;
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);
-        if (ws.notion && notion.content.state(ws)?.doc) {
-          ws = notion.content.schedule(ws);
-        }
+        // v0.14: a generated image is recorded in the Notion history.
+        if (ws.notion && p.task === 'image') ws = notion.content.schedule(ws, p.teamId, 'image');
+        // Discussion results reach the Notion history without pressing 「記録を保存」.
+        else if (
+          ws.notion &&
+          (['summarize', 'pressRelease', 'keywords'].includes(p.task) ||
+            (p.task === 'transcribe' && p.destination !== 'map'))
+        )
+          ws = notion.content.schedule(ws, p.teamId, 'auto');
         json(res, view(ws, user));
         return;
       }

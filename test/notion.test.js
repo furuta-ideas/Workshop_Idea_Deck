@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store, newWorkshop } from '../server/store.js';
 import { Notion } from '../server/notion.js';
-import { stageTitles } from '../server/notion-content.js';
+import { historyHeading } from '../server/notion-content.js';
 import { access, expire } from '../server/domain.js';
 
 // In-memory contract fixture. No production Notion token, database or network call.
@@ -61,14 +61,18 @@ function fixture(t) {
               {
                 type: 'child_database',
                 id: 'child-db',
-                child_database: { title: state.templateApplied ? '参加者一覧 (1) (1)' : '参加者一覧' },
+                child_database: {
+                  title: state.templateApplied ? '参加者一覧 (1) (1)' : '参加者一覧',
+                },
               },
               ...(state.templateApplied
-                ? stageTitles.map((s, i) => ({
-                    id: 'stage-' + i,
-                    type: 'heading_2',
-                    heading_2: { rich_text: [{ text: { content: s } }], is_toggleable: false },
-                  }))
+                ? [
+                    {
+                      id: 'history-heading',
+                      type: 'heading_2',
+                      heading_2: { rich_text: [{ text: { content: historyHeading } }] },
+                    },
+                  ]
                 : []),
             ]
           : [],
@@ -85,7 +89,7 @@ function fixture(t) {
           Object.entries({
             名前: 'title',
             選択: 'select',
-            グループ: 'select',
+            グループ: state.groupType || 'select',
             OTP認証結果: 'select',
             OTP認証日時: 'date',
           }).map(([k, type]) => [k, { type }]),
@@ -98,7 +102,10 @@ function fixture(t) {
           properties: {
             名前: title(m.email),
             選択: { select: { name: m.role } },
-            グループ: { select: m.group ? { name: m.group } : null },
+            グループ:
+              state.groupType === 'multi_select'
+                ? { type: 'multi_select', multi_select: m.group ? [{ name: m.group }] : [] }
+                : { select: m.group ? { name: m.group } : null },
             OTP認証結果: { select: { name: '認証済' } },
           },
         })),
@@ -125,7 +132,9 @@ function fixture(t) {
       state.members.push({
         email: body.properties.名前.title[0].text.content,
         role: body.properties.選択.select.name,
-        group: body.properties.グループ.select?.name,
+        group:
+          body.properties.グループ.select?.name || body.properties.グループ.multi_select?.[0]?.name,
+        groupBody: body.properties.グループ,
       });
       data = { id: 'new-person' };
     } else throw Error(`Unexpected test request: ${path}`);
@@ -156,6 +165,19 @@ test('Notion側で追加されたWS・子参加者DB・グループを安定ID�
     f.state.calls.some((c) => c.method !== 'GET' && !c.path.endsWith('/query')),
     false,
   );
+});
+test('参加者DBの「グループ」が複数選択型でも班を取り込み、同じ型で書き戻す', async (t) => {
+  const f = fixture(t);
+  f.state.groupType = 'multi_select';
+  await f.notion.sync();
+  let ws = f.store.all('workshops')[0];
+  assert.equal(ws.notion?.error, undefined);
+  const a = Object.values(ws.teams).find((t) => t.name === 'A班');
+  assert.ok(a);
+  assert.equal(ws.members['editor@example.test'].teamId, a.id);
+  await f.notion.setMember(ws, 'new@example.test', { role: '編集者', teamId: a.id });
+  const added = f.state.members.find((m) => m.email === 'new@example.test');
+  assert.deepEqual(added.groupBody, { multi_select: [{ name: 'A班' }] });
 });
 test('Notion更新とアプリの未同期変更は衝突として保持し、明示解決まで上書きしない', async (t) => {
   const f = fixture(t);
@@ -236,7 +258,7 @@ test('アプリ新規WSは指定テンプレートで一覧に作成し、非同
   await f.notion.sync();
   created = f.store.get('workshops', ws.id);
   assert.equal(created.notion.provisioning, false);
-  assert.equal(created.documentSync.queued, true);
+  assert.equal(!!created.documentSync?.queued, false); // v0.14: nothing is written until a save
   assert.equal(f.state.members[0].role, '管理者');
   assert.equal(created.name, '新規テンプレートWS');
   assert.equal(Object.values(created.teams)[0].rootText, '新規テンプレートWS');
@@ -379,7 +401,7 @@ test('Notion権限の再確認: 通信中のローカル編集を保持し、新
   await syncing;
   ws = f.store.get('workshops', ws.id);
   assert.equal(ws.teams[team.id].nodes[0].text, '権限確認中の編集');
-  assert.equal(ws.documentSync.pending, true);
+  assert.equal(!!ws.documentSync?.pending, false); // v0.14: edits are recorded on save
   assert.equal(ws.members[user.email].role, '閲覧者');
   await assert.rejects(
     () =>
@@ -409,4 +431,16 @@ test('Notion権限の独立更新: 長い本文処理とは別に権限の鮮度
   assert.equal(ws.members['editor@example.test'].role, '管理者');
   assert.equal(ws.teams[team.id].nodes[0].text, '保持するローカル内容');
   assert.equal(ws.documentSync.generation, 3);
+});
+test('書込み予算: 変化のない定期同期はストレージへ書き込まず、権限確認時刻だけメモリーで更新する', async (t) => {
+  const f = fixture(t);
+  f.state.templateApplied = true;
+  await f.notion.sync();
+  await f.notion.sync();
+  const before = f.store.writes;
+  for (let i = 0; i < 20; i++) await f.notion.sync();
+  assert.equal(f.store.writes - before, 0);
+  const ws = f.store.all('workshops')[0];
+  assert.ok(Date.now() - ws.notion.checkedAt < 5000, 'checkedAt is still fresh in memory');
+  assert.ok(f.store.skipped > 0);
 });

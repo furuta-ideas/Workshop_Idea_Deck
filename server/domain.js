@@ -1,6 +1,7 @@
 import { id, newWorkshop, newTeam, normalizeEmail, passwordHash } from './store.js';
 import { parseOutline } from './outline.js';
 import { mapActions, captureMap, recordMapUndo, removeCards, undoMap } from './map-history.js';
+import {saveIdea,clearIdea,restoreIdea,markIdeaDraft,ideaById,patchDiscussion} from './ideas.js';
 
 export class Fault extends Error {
   constructor(status, message) {
@@ -83,6 +84,8 @@ export const totals = (ws, phase) =>
     },
     { ...(ws.notionVoteBaseline?.[phase] || {}) },
   );
+// ③ text size (percent of the base size); the admin picks it per workshop.
+export const textScales = [100, 115, 130, 150];
 export function view(ws, user) {
   const result = structuredClone(ws);
   delete result.members;
@@ -148,7 +151,7 @@ export function mutate(store, user, wsId, body) {
       const valid =
         phase === 'cards'
           ? Object.values(ws.teams).some((t) => t.nodes.some((n) => n.id === p.target))
-          : !!ws.teams[p.target]?.image;
+          : !!ws.teams[p.target]?.image || !!ideaById(ws,p.target)?.idea.image;
       requireThat(valid, '投票先がありません');
       if (phase === 'cards') {
         const team = Object.values(ws.teams).find((t) => t.nodes.some((n) => n.id === p.target));
@@ -339,7 +342,7 @@ export function mutate(store, user, wsId, body) {
         'デッキは重複なしで最大5枚です',
       );
       requireThat(
-        p.ids.every((x) => team.nodes.some((n) => n.id === x) && counts[x] > 0),
+        p.ids.every((x) => (team.nodes.some((n) => n.id === x) && counts[x] > 0) || team.restoredCards?.some(n=>n.id===x)),
         '1票以上のカードを選択してください',
       );
       team.deck = p.ids;
@@ -353,9 +356,20 @@ export function mutate(store, user, wsId, body) {
         );
         team.deckSlots = p.slots;
       } else team.deckSlots = [...p.ids, ...Array(5 - p.ids.length).fill(null)];
+    } else if (body.action === 'saveIdea') {
+      saveIdea(store,ws,teamFor(ws,user,p.teamId),p);
+    } else if (body.action === 'clearIdea') {
+      clearIdea(store,ws,teamFor(ws,user,p.teamId),p);
+    } else if (body.action === 'restoreIdea') {
+      const own=teamFor(ws,user,p.teamId),found=ideaById(ws,p.ideaId);
+      requireThat(found && found.team.id===own.id,'自分のチームの企画だけ再編集できます',403);
+      // Unsent edits of the deck being left are kept with it.
+      if(own.activeIdeaId!==found.idea.id)patchDiscussion(own,p);
+      restoreIdea(store,ws,own,found.idea);
     } else if (body.action === 'discussion') {
       const team = teamFor(ws, user, p.teamId),
         d = team.discussion;
+      if(p.draftOnly)markIdeaDraft(team);
       for (const [key, max] of Object.entries({
         transcript: 30000,
         headline: 100,
@@ -393,6 +407,14 @@ export function mutate(store, user, wsId, body) {
       }
     } else if (body.action === 'settings') {
       requireThat(user.admin, '管理者のみ操作できます', 403);
+      if (p.textScale !== undefined) {
+        requireThat(textScales.includes(p.textScale), '文字サイズの指定が不正です');
+        ws.textScale = p.textScale;
+      }
+      if (p.character !== undefined) {
+        requireThat(['kashi', 'leafy'].includes(p.character), 'キャラクターの指定が不正です');
+        ws.character = p.character;
+      }
       for (const phase of ['cards', 'ideas']) {
         if (p.budgets?.[phase] !== undefined) {
           const n = p.budgets[phase];
@@ -431,7 +453,7 @@ export function mutate(store, user, wsId, body) {
     } else throw new Fault(400, '未対応の操作です');
     // A cancelled card vote can invalidate a previously selected deck.
     const counts = totals(ws, 'cards');
-    for (const team of Object.values(ws.teams)) team.deck = team.deck.filter((x) => counts[x] > 0);
+    for (const team of Object.values(ws.teams)) team.deck = team.deck.filter((x) => counts[x] > 0 || team.restoredCards?.some(n=>n.id===x));
     if (mapBefore) recordMapUndo(store, ws, mapTeam, user, mapBefore);
     ws.revision++;
     store.put('workshops', ws.id, ws);

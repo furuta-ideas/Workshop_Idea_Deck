@@ -1,6 +1,6 @@
 import { id, newWorkshop, newTeam, normalizeEmail } from './store.js';
 import { requireThat, Fault, expire, markdown } from './domain.js';
-import { NotionContent, stageTitles } from './notion-content.js';
+import { NotionContent } from './notion-content.js';
 
 const rt = (content) => [{ type: 'text', text: { content } }];
 const title = (p) => (p?.title || []).map((x) => x.plain_text || x.text?.content || '').join('');
@@ -26,6 +26,15 @@ export const participantSchema = {
   OTP認証結果: { select: { options: [{ name: '認証済' }] } },
   OTP認証日時: { date: {} },
 };
+// The participants DB may use select or multi_select for グループ (people often
+// switch it in Notion). Read the first group either way and write in the DB's type.
+const groupTypes = ['select', 'multi_select'];
+export const groupName = (prop) =>
+  prop?.type === 'multi_select' || Array.isArray(prop?.multi_select)
+    ? prop.multi_select?.[0]?.name
+    : prop?.select?.name;
+const groupValue = (type, name) =>
+  type === 'multi_select' ? { multi_select: name ? [{ name }] : [] } : { select: name ? { name } : null };
 export class Notion {
   constructor(store, config, transport = fetch) {
     this.store = store;
@@ -149,15 +158,16 @@ export class Notion {
     for (const [name, type] of Object.entries({
       名前: 'title',
       選択: 'select',
-      グループ: 'select',
+      グループ: groupTypes,
       OTP認証結果: 'select',
       OTP認証日時: 'date',
     }))
       requireThat(
-        schema.properties?.[name]?.type === type,
-        `参加者DBの「${name}」を${type}型で用意してください`,
+        [type].flat().includes(schema.properties?.[name]?.type),
+        `参加者DBの「${name}」を${[type].flat().join('または')}型で用意してください`,
         409,
       );
+    ws.notion.groupType = schema.properties.グループ.type;
     const rows = await this.list(`data_sources/${source}/query`, 'POST'),
       members = {};
     const liveTeams = this.store.get('workshops', ws.id)?.teams || {};
@@ -170,7 +180,7 @@ export class Notion {
       )
         continue;
       requireThat(!members[email], '参加者メールが重複しています。Notion側で修正してください', 409);
-      const group = row.properties.グループ?.select?.name;
+      const group = groupName(row.properties.グループ);
       let team =
         Object.values(liveTeams).find((t) => t.name === group) ||
         Object.values(ws.teams).find((t) => t.name === group);
@@ -265,17 +275,15 @@ export class Notion {
   async provision(ws) {
     if (ws.notion.templateId) {
       const blocks = await this.list(`blocks/${ws.notion.pageId}/children`);
-      const ready =
-        stageTitles.every((_, i) =>
-          blocks.some(
-            (b) => /^heading_/.test(b.type) && blockTitle(b).trim().startsWith('①②③④'[i]),
-          ),
-        ) &&
-        blocks.some((b) => b.type === 'child_database' && participantName(b.child_database.title));
+      // v0.14: the template needs only the participant list; the history
+      // heading is created on the first save if it is missing.
+      const ready = blocks.some(
+        (b) => b.type === 'child_database' && participantName(b.child_database.title),
+      );
       if (!ready) {
         requireThat(
           Date.now() - ws.notion.templateStartedAt < 600000,
-          'テンプレートの展開が完了しません。①〜④の見出しと参加者一覧DBを確認してください',
+          'テンプレートの展開が完了しません。参加者一覧DBを確認してください',
           409,
         );
         return false;
@@ -292,15 +300,17 @@ export class Notion {
     const source = await this.sourceFor(ws, true);
     const existing = await this.list(`data_sources/${source}/query`, 'POST');
     for (const [email, member] of Object.entries(ws.members)) {
-      if (!existing.some((p) => normalizeEmail(title(p.properties.名前)) === email))
+      if (!existing.some((p) => normalizeEmail(title(p.properties.名前)) === email)) {
+        ws.notion.groupType ||= (await this.call(`data_sources/${source}`)).properties?.グループ?.type;
         await this.call('pages', 'POST', {
           parent: { type: 'data_source_id', data_source_id: source },
           properties: {
             名前: { title: rt(email) },
             選択: { select: { name: member.role } },
-            グループ: { select: member.teamId ? { name: ws.teams[member.teamId].name } : null },
+            グループ: groupValue(ws.notion.groupType, member.teamId ? ws.teams[member.teamId].name : null),
           },
         });
+      }
     }
     if (ws.notion.templateId) {
       await this.pullMembers(ws);
@@ -312,13 +322,12 @@ export class Notion {
       this.store.put('workshops', ws.id, ws);
       const imported = await this.content.pull(ws, undefined, true);
       requireThat(
-        imported && !ws.documentSync?.error,
-        ws.documentSync?.error || 'テンプレート本文を読み込めません',
+        imported && !ws.documentSync?.readError,
+        ws.documentSync?.readError || 'テンプレート本文を読み込めません',
         409,
       );
       ws = this.store.get('workshops', ws.id);
-      for (const team of Object.values(ws.teams)) team.rootText = ws.theme;
-      this.content.schedule(ws);
+      for (const team of Object.values(ws.teams)) team.rootText ||= ws.theme;
     }
     ws.notion.provisioning = false;
     delete ws.notion.error;
@@ -494,11 +503,12 @@ export class Notion {
   }
   async setMember(ws, email, member) {
     const source = await this.sourceFor(ws);
+    ws.notion.groupType ||= (await this.call(`data_sources/${source}`)).properties?.グループ?.type;
     const old = ws.members[email];
     const properties = {
       名前: { title: rt(email) },
       選択: { select: { name: member.role } },
-      グループ: { select: member.teamId ? { name: ws.teams[member.teamId].name } : null },
+      グループ: groupValue(ws.notion.groupType, member.teamId ? ws.teams[member.teamId].name : null),
     };
     await this.call(
       old?.notionPageId ? `pages/${old.notionPageId}` : 'pages',
