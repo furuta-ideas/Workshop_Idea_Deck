@@ -1,4 +1,5 @@
 import { hash } from './store.js';
+import { deckSlots } from './deck.js';
 import { requireThat, mutate, totals, access, teamFor } from './domain.js';
 import { validatePNG } from './png.js';
 import { outboxKey, snapshotStore, mergeBlockIds, preserveLocalContent } from './notion-outbox.js';
@@ -387,6 +388,23 @@ export class NotionContent {
       team.deck = r.deck.filter(
         (id) => team.nodes.some((n) => n.id === id) && totals(ws, 'cards')[id] > 0,
       );
+      if (r.deckSlots !== undefined) {
+        requireThat(
+          Array.isArray(r.deckSlots) &&
+            r.deckSlots.length === 5 &&
+            r.deckSlots.every(
+              (id) => id === null || (typeof id === 'string' && id.length <= 100),
+            ) &&
+            new Set(r.deckSlots.filter(Boolean)).size === r.deckSlots.filter(Boolean).length,
+          'Notionのデッキ配置が不正です',
+          409,
+        );
+        // The Notion deck list is master. A person may edit it without updating slot metadata.
+        team.deckSlots =
+          JSON.stringify(r.deckSlots.filter(Boolean)) === JSON.stringify(r.deck)
+            ? deckSlots({ ...team, deckSlots: r.deckSlots })
+            : [...team.deck, ...Array(5 - team.deck.length).fill(null)];
+      } else team.deckSlots = [...team.deck, ...Array(5 - team.deck.length).fill(null)];
       if (typeof r.rootText === 'string' && [...r.rootText].length <= 500)
         team.rootText = r.rootText;
     }
@@ -418,15 +436,41 @@ export class NotionContent {
           409,
         );
         for (const round of r.discussion.rounds)
-          for (const value of Object.values(round))
+          for (const [key, value] of Object.entries(round))
             requireThat(
-              typeof value === 'string' && value.length <= 30000,
+              key === 'features'
+                ? Array.isArray(value) &&
+                    value.length <= 3 &&
+                    value.every(
+                      (s) => typeof s === 'string' && s.length <= 200 && !/[\r\n]/.test(s),
+                    )
+                : typeof value === 'string' && value.length <= 30000,
               '議論履歴の形式を確認してください',
               409,
             );
         team.discussion.rounds = r.discussion.rounds;
       }
       if (typeof r.discussion.running === 'boolean') team.discussion.running = r.discussion.running;
+      for (const [key, max] of Object.entries({ headline: 100, pressRelease: 2000 })) {
+        if (r.discussion[key] === undefined) continue;
+        requireThat(
+          typeof r.discussion[key] === 'string' && [...r.discussion[key]].length <= max,
+          `Notionの${key}の形式を確認してください`,
+          409,
+        );
+        team.discussion[key] = r.discussion[key];
+      }
+      if (r.discussion.features !== undefined) {
+        const values = r.discussion.features;
+        requireThat(
+          Array.isArray(values) &&
+            values.length <= 3 &&
+            values.every((s) => typeof s === 'string' && [...s].length <= 200 && !/[\r\n]/.test(s)),
+          'Notionの３つの特長の形式を確認してください',
+          409,
+        );
+        team.discussion.features = values;
+      }
     }
     if (phase === 4) this.importVotes(ws, 'ideas', [team.id], { [team.id]: r.totalVotes ?? 0 });
   }
@@ -942,6 +986,7 @@ export class NotionContent {
         })),
         totals: Object.fromEntries(team.nodes.map((n) => [n.id, totals(ws, 'cards')[n.id] || 0])),
         deck: team.deck,
+        deckSlots: deckSlots(team),
         budget: ws.budgets.cards,
       };
     if (phase === 3)
@@ -949,9 +994,19 @@ export class NotionContent {
         ...base,
         deck: team.deck,
         discussion: Object.fromEntries(
-          ['transcript', 'what', 'who', 'how', 'points', 'keywords', 'rounds', 'running'].map(
-            (k) => [k, team.discussion[k]],
-          ),
+          [
+            'transcript',
+            'headline',
+            'features',
+            'pressRelease',
+            'what',
+            'who',
+            'how',
+            'points',
+            'keywords',
+            'rounds',
+            'running',
+          ].map((k) => [k, team.discussion[k]]),
         ),
         imageKey: team.image ? hash(team.image.base64) : null,
       };

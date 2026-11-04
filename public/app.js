@@ -51,7 +51,9 @@ const mapCollapsed = new Map();
 const cardSorts = new Map();
 let voteUiKey = '';
 let mapFit = false,
-  mapUndoBusy = false;
+  mapUndoBusy = false,
+  pointerDragging = false,
+  generationBusy = false;
 const advicePhases = ['ideation', 'selection', 'visualization', 'voting'];
 const brand = () =>
   '<div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><div class="brand-name">アイディアワークショップ支援ツール</div><div class="brand-sub">SMALL INSIGHTS. NEW POSSIBILITIES.</div></div></div>';
@@ -524,7 +526,7 @@ function mapView() {
     return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
   };
   const rootEdit = inlineEdit?.id === 'theme';
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions">${compactVoting()}<button id="move-topic-up" class="toolbar-icon" title="上へ移動（Alt＋↑）" aria-label="トピックを上へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↑</button><button id="move-topic-down" class="toolbar-icon" title="下へ移動（Alt＋↓）" aria-label="トピックを下へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↓</button><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="undo-map" class="text-button" title="マップ操作を取り消す（Ctrl＋Z・最大20操作）"${disabled(canEdit && !mapUndoBusy)}>↶ 元に戻す</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions">${compactVoting()}<button id="move-topic-up" class="toolbar-icon" title="上へ移動" aria-label="トピックを上へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↑</button><button id="move-topic-down" class="toolbar-icon" title="下へ移動" aria-label="トピックを下へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↓</button><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="undo-map" class="text-button" title="マップ操作を取り消す（Ctrl＋Z・最大20操作）"${disabled(canEdit && !mapUndoBusy)}>↶ 元に戻す</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
   <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：枝ごと削除 · Ctrl＋Z：取り消し · ドラッグ：移動'}</div></div></div>`;
 }
 function topicActionsDialog() {
@@ -840,7 +842,7 @@ function votingIcon() {
 function compactVotingContents() {
   const open = votingOpen('cards'),
     used = Object.values(ws.votes.cards.mine).reduce((a, b) => a + b, 0);
-  return `<button class="toolbar-icon ${open ? 'voting-active' : ''}" ${open ? 'data-stop' : 'data-timer'}="cards" aria-label="${open ? 'カード投票を締め切る' : 'カード投票を開始'}" aria-pressed="${!!open}" title="${open ? 'カード投票を締め切る' : 'カード投票を開始'}"${disabled(me.admin && writable())}>${votingIcon()}</button><span class="vote-budget" title="残りの票 / 持ち票">${ws.budgets.cards - used}/${ws.budgets.cards}</span><span class="vote-clock" data-clock="cards"></span>`;
+  return `<button class="toolbar-icon ${open ? 'voting-active' : ''}" ${open ? 'data-stop' : 'data-timer'}="cards" aria-label="${open ? 'カード投票を締め切る' : 'カード投票を開始'}" aria-pressed="${!!open}" title="${open ? 'カード投票を締め切る' : 'カード投票を開始'}"${disabled((me.admin && writable()) || editableTeam())}>${votingIcon()}</button><span class="vote-budget" title="残りの票 / 持ち票">${ws.budgets.cards - used}/${ws.budgets.cards}</span><span class="vote-clock" data-clock="cards"></span>`;
 }
 function compactVoting() {
   return `<div class="compact-voting">${compactVotingContents()}</div>`;
@@ -856,7 +858,7 @@ function topicVoteContents(n) {
   return `${total > 0 ? `<span class="topic-total" aria-label="${total}票">${total}</span>` : ''}${cardVoteButtons(n)}`;
 }
 function refreshVotingUI(force = false) {
-  if (!ws || !team()) return;
+  if (!ws || !team() || pointerDragging) return;
   $('#mindmap')?.classList.toggle('map-voting-active', !!votingOpen('cards'));
   const key = `${ws.id}/${teamId}/${tab}/${ws.revision}/${!!votingOpen('cards')}/${editableTeam()}`;
   if (!force && key === voteUiKey) return;
@@ -910,10 +912,11 @@ function bindVoting() {
       })),
   );
   $$('[data-timer]').forEach(
-    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.timer }))),
+    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.timer, teamId }))),
   );
   $$('[data-stop]').forEach(
-    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.stop, stop: true }))),
+    (b) =>
+      (b.onclick = guarded(() => action('timer', { phase: b.dataset.stop, stop: true, teamId }))),
   );
 }
 function sticky(n, deck = false) {
@@ -932,19 +935,49 @@ function cardView(deck) {
   return `<div class="panel narrowed-cards"><div class="panel-title"><h3>絞込み済みカード <span class="muted">${nodes.length}</span></h3><div class="row">${deck ? '' : compactVoting() + `<button id="sort-cards" class="toolbar-icon" aria-label="${sorted ? 'マップの順番に戻す' : '得票数の多い順に並べる'}" aria-pressed="${!!sorted}" title="${sorted ? 'マップの順番に戻す' : '得票数の多い順に並べる'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16M4 10h11M4 15h6M18 11v10m-3-3 3 3 3-3"/></svg></button>`}</div></div>${nodes.length ? `<div class="sticky-grid">${nodes.map((n) => sticky(n, deck)).join('')}</div>` : '<div class="empty">絞込み済みカードはありません</div>'}</div>`;
 }
 
+function deckPositions() {
+  const t = team(),
+    slots = Array(5).fill(null),
+    seen = new Set();
+  (t.deckSlots || []).slice(0, 5).forEach((id, i) => {
+    if (t.deck.includes(id) && !seen.has(id)) {
+      slots[i] = id;
+      seen.add(id);
+    }
+  });
+  for (const id of t.deck)
+    if (!seen.has(id)) {
+      const at = slots.indexOf(null);
+      if (at >= 0) {
+        slots[at] = id;
+        seen.add(id);
+      }
+    }
+  return slots;
+}
 function deckView() {
   const t = team(),
     d = t.discussion,
-    slots = 5;
+    canEdit = editableTeam();
+  const field = (key, label, max, placeholder = '') =>
+    `<div class="outline-field"><label for="${key}">${label}</label><input id="${key}" data-draft="${key}" maxlength="${max}" value="${esc(d[key] || '')}" placeholder="${placeholder}"${disabled(canEdit)}></div>`;
   return `<div class="deck-workspace"><div class="panel casino-deck"><div class="panel-title"><h3>アイデアのデッキ <span class="muted">${t.deck.length} / 5 枚</span></h3></div><div class="deck" id="deck">${Array.from(
-    { length: slots },
+    { length: 5 },
     (_, i) => {
-      const n = t.nodes.find((n) => n.id === t.deck[i]);
-      return `<div class="slot ${n ? 'filled' : ''}" data-slot="${i}">${n ? `<article class="deck-card sticky g${n.group}" data-deck-card="${n.id}" draggable="${editableTeam()}"><span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(editableTeam())}>×</button><p>${esc(n.text)}</p></article>` : '<span aria-hidden="true">＋</span>'}<span class="slot-number">0${i + 1}</span></div>`;
+      const n = t.nodes.find((n) => n.id === deckPositions()[i]);
+      return `<div class="slot ${n ? 'filled' : ''}" data-slot="${i}">${n ? `<article class="deck-card sticky g${n.group}" data-deck-card="${n.id}"><span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(canEdit)}>×</button><p>${esc(n.text)}</p></article>` : '<span aria-hidden="true">＋</span>'}<span class="slot-number">0${i + 1}</span></div>`;
     },
-  ).join(
-    '',
-  )}</div></div>${cardView(true)}</div><div class="deck-discussion"><div class="panel"><form id="discussion-form"><div class="discussion-editor"><div><div class="row between"><h3>ディスカッション記録</h3><span class="${d.running ? 'recording' : 'muted'}">${d.running ? '● 議論中' : 'レビュー / 待機中'}</span></div><textarea id="transcript" data-draft="transcript" class="transcript" maxlength="30000" placeholder="議論の内容を入力できます。認可済み音声認識を設定すると録音から文字起こしできます。"${disabled(editableTeam())}>${esc(d.transcript)}</textarea><div class="row between"><button type="button" id="record-discussion"${disabled(editableTeam() && d.running && aiAvailable('transcribe'))}>${recording ? '■ 録音を停止' : '◉ 録音・文字起こし'}</button><span class="save-hint">最大約6MB / 1回</span></div><p class="muted">${aiStatus('transcribe')}</p><small class="muted">議論ラウンド: ${d.rounds.length} 回完了</small></div><div class="summary"><h3>アイディアの輪郭</h3><div class="row"><label for="what">WHAT</label><input id="what" data-draft="what" maxlength="40" placeholder="創出する価値（40文字以内）" value="${esc(d.what)}"${disabled(editableTeam())}></div><div class="row"><label for="who">WHO</label><input id="who" data-draft="who" maxlength="40" placeholder="誰に（40文字以内）" value="${esc(d.who)}"${disabled(editableTeam())}></div><div class="row"><label for="how">HOW</label><textarea id="how" data-draft="how" maxlength="120" placeholder="どうやって（120文字以内）"${disabled(editableTeam())}>${esc(d.how)}</textarea></div><label for="points">重要な論点（1行に1つ）</label><textarea id="points" data-draft="points" maxlength="5000"${disabled(editableTeam())}>${esc(d.points)}</textarea><label for="keywords">強調するキーワード（読点・カンマで区切る）</label><input id="keywords" data-draft="keywords" maxlength="500" value="${esc(d.keywords)}"${disabled(editableTeam())}><div class="row between"><button class="primary"${disabled(editableTeam())}>記録を保存</button><button type="button" id="preview-summary" class="text-button">文章プレビュー</button></div></div></div></form></div><aside class="panel discussion-control"><div><div class="eyebrow">LET’S COMBINE</div><h3>カードをつないで、<br>まだない価値を。</h3><p>選んだ言葉の間にある関係を話し合い、アイディアの輪郭をまとめましょう。</p></div><div><button id="discussion-toggle" class="primary"${disabled(editableTeam())}>${d.running ? '■ ディスカッションの終了' : '▶ ディスカッションの開始'}</button><p>終了後は内容をレビュー。何度でも再開して議論を追加できます。</p><div class="stack"><button data-ai="summarize"${disabled(editableTeam() && aiAvailable('summarize'))}>✧ 議論をAIで整理</button><button data-ai="keywords"${disabled(editableTeam() && aiAvailable('keywords'))}>重要キーワードを抽出</button><button data-ai="image" class="accent"${disabled(editableTeam() && aiAvailable('image') && !!me.ai.imagePrompt)}>アイディアの可視化・画像化 ↗</button></div><p>${me.ai.imagePrompt ? '画像生成は設定済みプロンプトで実行します。' : '画像生成プロンプトは未設定です。管理者が後日設定できます。'}<br>${aiStatus('summarize')}</p></div></aside></div>`;
+  ).join('')}</div></div>${cardView(true)}</div>
+  <div class="deck-discussion"><div class="panel"><form id="discussion-form"><div class="discussion-editor">
+  <div><div class="row between discussion-heading"><h3>ディスカッションの記録</h3><button type="button" id="record-discussion" class="${recording ? 'is-recording' : ''}"${disabled(canEdit)}>${micIcon()} ${recording ? '録音を停止' : '録音開始'}</button></div>
+  <textarea id="transcript" data-draft="transcript" class="transcript" maxlength="30000" placeholder="議論の内容を入力・録音します。"${disabled(canEdit)}>${esc(d.transcript)}</textarea>
+  <div class="row between"><span class="save-hint">${recording ? '● 録音中 · ' : ''}最大約6MB / 1回</span><button type="button" data-ai="summarize"${disabled(canEdit)}>✧ 議論を整理</button></div><p class="muted">${aiStatus('transcribe')}</p></div>
+  <div class="summary"><h3>アイデアの輪郭</h3>${field('headline', '一言で言うと', 100, '企画の価値を一言で')}${field('who', 'Who', 40, '誰に')}${field('what', 'What', 40, 'どんな価値を提供するか')}<div class="outline-field"><label for="how">How</label><textarea id="how" data-draft="how" maxlength="120" placeholder="どうやって実現するか"${disabled(canEdit)}>${esc(d.how)}</textarea></div>
+  <fieldset class="features"><legend>３つの特長</legend>${[0, 1, 2].map((i) => `<label class="sr-only" for="feature-${i}">特長${i + 1}</label><input id="feature-${i}" data-draft="feature-${i}" maxlength="200" placeholder="${i + 1}．特長を１行の文章で" value="${esc(d.features?.[i] || '')}"${disabled(canEdit)}>`).join('')}</fieldset>
+  <button type="button" data-ai="pressRelease" class="primary"${disabled(canEdit)}>模擬プレスリリースの生成</button><label for="pressRelease">模擬プレスリリース</label><textarea id="pressRelease" data-draft="pressRelease" class="press-release" maxlength="2000" placeholder="生成した原稿を確認・修正できます"${disabled(canEdit)}>${esc(d.pressRelease || '')}</textarea>
+  <button type="button" data-ai="image" class="visualize-button"${disabled(canEdit)}>アイデアの可視化 ↗</button><small class="muted">Genspark / GPT Image 2.5 · 16:9</small>
+  <div class="row between section-actions"><button class="primary"${disabled(canEdit)}>記録を保存</button><button type="button" id="preview-summary" class="text-button">文章プレビュー</button></div></div></div></form></div></div>
+  ${t.image ? `<div class="panel generated-proposal"><h3>企画提案シート</h3><button class="image-open" data-image="${t.id}" aria-label="企画提案シートを拡大"><img src="data:image/png;base64,${t.image.base64}" alt="${esc(d.headline || '企画提案シート')}"></button></div>` : ''}`;
 }
 function ideaView() {
   const teams = Object.values(ws.teams).filter((t) => t.image);
@@ -1154,6 +1187,174 @@ async function commitInlineNow() {
     return false;
   }
 }
+// Use pointer events so dragging also works in embedded browsers and between topic rows.
+// Native HTML drag events alone never fire on some embedded browser surfaces.
+function pointerDrag(source, label, resolve, drop) {
+  source.draggable = false;
+  source.style.touchAction = 'none';
+  source.onpointerdown = (start) => {
+    if (
+      start.button !== 0 ||
+      !editableTeam() ||
+      inlineEdit ||
+      (editing && tab === 0) ||
+      pointerDragging
+    )
+      return;
+    if (
+      start.target.closest('button,input,textarea') &&
+      start.target.closest('button,input,textarea') !== source
+    )
+      return;
+    const controller = new AbortController();
+    let active = false,
+      ghost,
+      destination;
+    const cleanMarkers = () =>
+      $$('.map-drop-active,.map-drop-before,.map-drop-after,.dragover').forEach((el) =>
+        el.classList.remove('map-drop-active', 'map-drop-before', 'map-drop-after', 'dragover'),
+      );
+    const finish = (event, cancel = false) => {
+      if (event.pointerId !== start.pointerId) return;
+      controller.abort();
+      if (!active) return;
+      source.releasePointerCapture?.(start.pointerId);
+      ghost?.remove();
+      source.classList.remove('dragging');
+      cleanMarkers();
+      pointerDragging = false;
+      mapDragId = null;
+      // The click following pointerup must not select a stale element or vote.
+      const suppressClick = (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      };
+      document.addEventListener('click', suppressClick, { capture: true, once: true });
+      setTimeout(() => document.removeEventListener('click', suppressClick, true), 0);
+      if (!cancel && destination) void guarded(() => drop(destination))();
+    };
+    document.addEventListener(
+      'pointermove',
+      (event) => {
+        if (event.pointerId !== start.pointerId) return;
+        if (!active && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 6)
+          return;
+        event.preventDefault();
+        if (!active) {
+          active = pointerDragging = true;
+          source.setPointerCapture?.(start.pointerId);
+          source.classList.add('dragging');
+          ghost = document.createElement('div');
+          ghost.className = 'pointer-drag-ghost';
+          ghost.textContent = label;
+          document.body.appendChild(ghost);
+        }
+        ghost.style.left = `${event.clientX + 14}px`;
+        ghost.style.top = `${event.clientY + 12}px`;
+        cleanMarkers();
+        destination = resolve(event, start);
+        if (destination) destination.element.classList.add(destination.className);
+        const scroll = $('.map-scroll');
+        if (scroll && tab === 0) {
+          const r = scroll.getBoundingClientRect();
+          if (event.clientY < r.top + 30) scroll.scrollTop -= 18;
+          if (event.clientY > r.bottom - 30) scroll.scrollTop += 18;
+        }
+      },
+      { signal: controller.signal, passive: false },
+    );
+    document.addEventListener('pointerup', (e) => finish(e), { signal: controller.signal });
+    document.addEventListener('pointercancel', (e) => finish(e, true), {
+      signal: controller.signal,
+    });
+    window.addEventListener('blur', () => finish({ pointerId: start.pointerId }, true), {
+      signal: controller.signal,
+    });
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key === 'Escape') finish({ pointerId: start.pointerId }, true);
+      },
+      { signal: controller.signal },
+    );
+  };
+}
+function bindMapPointerDrag() {
+  $$('[data-node]').forEach((source) => {
+    const id = source.dataset.node,
+      node = team().nodes.find((n) => n.id === id);
+    pointerDrag(
+      source,
+      node.text,
+      (event, start) => {
+        mapDragId = id;
+        const scroll = $('.map-scroll').getBoundingClientRect();
+        if (
+          event.clientX < scroll.left ||
+          event.clientX > scroll.right ||
+          event.clientY < scroll.top ||
+          event.clientY > scroll.bottom
+        )
+          return null;
+        let target = document
+          .elementFromPoint(event.clientX, event.clientY)
+          ?.closest('[data-map-target]');
+        let position = 'child';
+        const hit = target && team().nodes.find((n) => n.id === target.dataset.mapTarget),
+          bounds = target?.getBoundingClientRect(),
+          childTarget =
+            target &&
+            target.dataset.mapTarget !== id &&
+            (target.dataset.mapTarget === 'theme' ||
+              (hit && (hit.parent || 'theme') !== (node.parent || 'theme')) ||
+              (event.clientX > bounds.left + bounds.width * 0.7 &&
+                event.clientY > bounds.top + bounds.height * 0.25 &&
+                event.clientY < bounds.bottom - bounds.height * 0.25));
+        // A predominantly vertical gesture reorders siblings even in the gaps between them.
+        if (Math.abs(event.clientX - start.clientX) < 70 && !childTarget) {
+          const siblings = $$('[data-node]').filter((b) => {
+            const n = team().nodes.find((n) => n.id === b.dataset.node);
+            return n.id !== id && (n.parent || 'theme') === (node.parent || 'theme');
+          });
+          target = siblings.sort((a, b) => {
+            const ar = a.getBoundingClientRect(),
+              br = b.getBoundingClientRect();
+            return (
+              Math.abs(event.clientY - (ar.top + ar.bottom) / 2) -
+              Math.abs(event.clientY - (br.top + br.bottom) / 2)
+            );
+          })[0];
+          if (target) {
+            const r = target.getBoundingClientRect();
+            position = event.clientY < (r.top + r.bottom) / 2 ? 'before' : 'after';
+          }
+        } else if (target && target.dataset.mapTarget !== 'theme') {
+          const r = target.getBoundingClientRect(),
+            ratio = (event.clientY - r.top) / r.height;
+          position = ratio < 0.25 ? 'before' : ratio > 0.75 ? 'after' : 'child';
+        }
+        if (!target || target.dataset.mapTarget === id) return null;
+        const targetId = target.dataset.mapTarget;
+        let ancestor = targetId;
+        while (ancestor && ancestor !== 'theme') {
+          if (ancestor === id) return null;
+          ancestor = team().nodes.find((n) => n.id === ancestor)?.parent;
+        }
+        return {
+          element: target,
+          className: position === 'child' ? 'map-drop-active' : `map-drop-${position}`,
+          targetId,
+          position,
+        };
+      },
+      async ({ targetId, position }) => {
+        selected = id;
+        if (position === 'child') await moveMapNode(id, targetId);
+        else await action('reorderTopic', { teamId, id, targetId, position });
+      },
+    );
+  });
+}
 function bindMap() {
   $('#mindmap').style.transform = `scale(${zoom})`;
   $('#undo-map').onclick = guarded(undoMapAction);
@@ -1268,11 +1469,6 @@ function bindMap() {
     };
     button.onkeydown = (e) => {
       if (e.isComposing) return;
-      if (e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
-        e.preventDefault();
-        void guarded(() => moveTopicVertical(id, e.key === 'ArrowUp' ? -1 : 1))();
-        return;
-      }
       if (['Enter', 'Insert', 'F2', 'Delete'].includes(e.key)) {
         e.preventDefault();
         if (e.key === 'Delete' && id !== 'theme') deleteMapTopic(id);
@@ -1347,6 +1543,7 @@ function bindMap() {
         else await moveMapNode(selected, null, true);
       });
   });
+  bindMapPointerDrag();
   requestAnimationFrame(() => (mapFit ? fitMap() : updateMapStage()));
   mapObserver?.disconnect();
   if (window.ResizeObserver) {
@@ -1432,7 +1629,26 @@ function bindStep() {
     };
   $$('[data-ai]')
     .filter((b) => b.id !== 'map-record')
-    .forEach((b) => (b.onclick = guarded(() => runAI(b.dataset.ai))));
+    .forEach(
+      (b) =>
+        (b.onclick = guarded(async () => {
+          if (generationBusy) return;
+          if (!aiAvailable(b.dataset.ai))
+            throw Error(
+              'AI接続が未設定です。管理者設定の「AI接続とモデル」でGenspark APIキー、または社内Genspark接続を設定してください。',
+            );
+          generationBusy = true;
+          b.disabled = true;
+          try {
+            if (tab === 2) await action('discussion', { teamId, ...discussionValues() });
+            $$('[data-ai]').forEach((button) => (button.disabled = true));
+            await runAI(b.dataset.ai);
+          } finally {
+            generationBusy = false;
+            $$('[data-ai]').forEach((button) => (button.disabled = !editableTeam()));
+          }
+        })),
+    );
   if (tab === 2) {
     $$('[data-card],[data-deck-card]').forEach((c) =>
       c.addEventListener('dragstart', (e) => {
@@ -1446,12 +1662,39 @@ function bindStep() {
     );
     const add = async (nodeId, index) => {
       if (!editableTeam()) throw Error('他チームは閲覧のみです');
+      if (editing) await action('discussion', { teamId, ...discussionValues() });
       if (!team().nodes.some((n) => n.id === nodeId))
         throw Error('配置するカードを確認してください');
-      const ids = team().deck.filter((x) => x !== nodeId);
-      ids.splice(Math.min(index, ids.length), 0, nodeId);
-      await action('deck', { teamId, ids });
+      const slots = deckPositions(),
+        previous = slots.indexOf(nodeId);
+      index = Math.min(4, index);
+      if (previous === index) return;
+      const displaced = slots[index];
+      if (previous >= 0) slots[previous] = displaced;
+      else if (displaced) {
+        const empty = slots.indexOf(null);
+        if (empty < 0) throw Error('デッキは最大５枚です');
+        slots[empty] = displaced;
+      }
+      slots[index] = nodeId;
+      await action('deck', { teamId, ids: slots.filter(Boolean), slots });
     };
+    $$('[data-card],[data-deck-card]').forEach((source) => {
+      const id = source.dataset.card || source.dataset.deckCard;
+      pointerDrag(
+        source,
+        team().nodes.find((n) => n.id === id)?.text || '',
+        (event) => {
+          const slot = document
+            .elementFromPoint(event.clientX, event.clientY)
+            ?.closest('[data-slot]');
+          return slot
+            ? { element: slot, className: 'dragover', index: Number(slot.dataset.slot) }
+            : null;
+        },
+        ({ index }) => add(id, index),
+      );
+    });
     $$('[data-slot]').forEach((slot) => {
       slot.ondragover = (e) => {
         if (editableTeam()) {
@@ -1468,28 +1711,29 @@ function bindStep() {
       });
     });
     $$('[data-add-deck]').forEach(
-      (b) => (b.onclick = guarded(() => add(b.dataset.addDeck, team().deck.length))),
+      (b) => (b.onclick = guarded(() => add(b.dataset.addDeck, deckPositions().indexOf(null)))),
     );
     $$('[data-remove-deck]').forEach(
       (b) =>
-        (b.onclick = guarded(() =>
-          action('deck', { teamId, ids: team().deck.filter((x) => x !== b.dataset.removeDeck) }),
-        )),
+        (b.onclick = guarded(async () => {
+          if (editing) await action('discussion', { teamId, ...discussionValues() });
+          await action('deck', {
+            teamId,
+            ids: team().deck.filter((x) => x !== b.dataset.removeDeck),
+            slots: deckPositions().map((id) => (id === b.dataset.removeDeck ? null : id)),
+          });
+        })),
     );
     $('#discussion-form').onsubmit = guarded(async (e) => {
       e.preventDefault();
       await action('discussion', { teamId, ...discussionValues() });
       toast('議論の記録を保存しました');
     });
-    $('#discussion-toggle').onclick = guarded(async () => {
-      stopRecording();
-      await action('discussion', {
-        teamId,
-        ...discussionValues(),
-        running: !team().discussion.running,
-      });
+    $('#record-discussion').onclick = guarded(async () => {
+      if (!recording && aiAvailable('transcribe'))
+        await action('discussion', { teamId, ...discussionValues(), running: true });
+      await recordAudio('discussion');
     });
-    $('#record-discussion').onclick = guarded(() => recordAudio('discussion'));
     $('#preview-summary').onclick = () =>
       openDialog(
         `<h2>アイディアの文章プレビュー</h2><div class="summary-preview">${summaryHTML(discussionValues())}</div>`,
@@ -1504,12 +1748,16 @@ function bindStep() {
   );
 }
 function discussionValues() {
-  return Object.fromEntries(
-    ['transcript', 'what', 'who', 'how', 'points', 'keywords'].map((k) => [
-      k,
-      $('#' + k)?.value ?? team().discussion[k],
-    ]),
-  );
+  return {
+    ...Object.fromEntries(
+      ['transcript', 'headline', 'pressRelease', 'what', 'who', 'how', 'points', 'keywords'].map(
+        (k) => [k, $('#' + k)?.value ?? team().discussion[k] ?? ''],
+      ),
+    ),
+    features: [0, 1, 2].map(
+      (i) => $('#feature-' + i)?.value ?? team().discussion.features?.[i] ?? '',
+    ),
+  };
 }
 function summaryHTML(d) {
   const words = String(d.keywords || '')
@@ -1532,9 +1780,12 @@ function summaryHTML(d) {
     }
     return out + esc(value.slice(end));
   };
-  return `WHAT　${bold(d.what)}\nWHO　${bold(d.who)}\nHOW　${bold(d.how)}\n\n${String(
-    d.points || '',
+  return `一言で言うと　${bold(d.headline)}\nWho　${bold(d.who)}\nWhat　${bold(d.what)}\nHow　${bold(d.how)}\n\n３つの特長\n${(
+    d.features || []
   )
+    .filter(Boolean)
+    .map((x) => '・' + bold(x))
+    .join('\n')}\n\n${bold(d.pressRelease)}\n\n${String(d.points || '')
     .split('\n')
     .filter(Boolean)
     .map((x) => '・' + bold(x))
@@ -1572,7 +1823,7 @@ async function runAI(task, extra = {}) {
   const preview =
     task === 'image' && typeof p.result.pngBase64 === 'string'
       ? `<img class="image-large" src="data:image/png;base64,${esc(p.result.pngBase64)}" alt="生成画像の適用前プレビュー">`
-      : `<div class="proposal">${esc(JSON.stringify(p.result, null, 2))}</div>`;
+      : `<div class="proposal">${esc(task === 'pressRelease' ? p.result.text : JSON.stringify(p.result, null, 2))}</div>`;
   openDialog(
     `<h2>AI提案をレビュー</h2><p class="muted">内容を確認してから、チームの共有データに適用してください。${task === 'image' ? '画像の差替時は、このチーム画像への投票がリセットされます。' : ''}</p>${preview}<div class="row section-actions"><button id="apply-ai" class="primary">確認して適用</button><button id="discard-ai">今回は適用しない</button></div>`,
   );
@@ -1730,12 +1981,12 @@ async function settings() {
               '',
             )}</tbody></table><div class="qr-area"><img class="qr" src="/api/workshops/${ws.id}/qr" alt="参加用QRコード"><div><h3>参加用QR</h3><p class="muted">登録済みメール＋メールOTPで参加します。<br>QRだけで権限は付与されません。</p><a href="${esc(location.origin + '/?workshop=' + ws.id)}" target="_blank" rel="noopener">参加ページを開く ↗</a></div></div></section>`
         : ''
-    }<section><h3>Notion連携</h3>${contentStatus()}<p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AIファシリテータの動作（Markdown）</h3><p class="muted">このmdをAIの指示として読み込みます。AI未接続時は先頭設定の基本ガイドを使います。JSON設定ブロックを保持してください。</p><form id="facilitator-form"><label for="facilitator-md">ファシリテータ用md</label><textarea id="facilitator-md" class="markdown-editor" spellcheck="false" maxlength="120000">${esc(facilitator.markdown)}</textarea><div class="row"><button class="primary">mdを保存</button><a href="/api/facilitator/export">mdをダウンロード ↓</a></div><p id="facilitator-save-status" role="status"></p></form></section><section><h3>AI接続とモデル</h3><p class="muted">会社承認済みの接続先はサーバーの許可リストから選択します。認可情報・接続キーは画面から追加できません。</p><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
+    }<section><h3>Notion連携</h3>${contentStatus()}<p class="muted">${connection.enabled ? '長期API接続を設定済み。' : '長期APIトークンとWS一覧のデータソースIDは、サーバー環境変数で設定してください。'} ${connection.at ? '最終同期 ' + new Date(connection.at).toLocaleString('ja-JP') : ''}</p>${connection.error ? `<div class="warning">${esc(connection.error)}</div>` : ''}<div class="row section-actions"><button id="notion-sync"${disabled(connection.enabled)}>今すぐ同期</button>${ws && !ws.notion ? `<button id="notion-publish"${disabled(connection.enabled && !ws.createAttempt)}>このWSをNotionへ接続</button>` : ''}</div>${ws?.createAttempt && !ws.notion ? '<p class="error">ページ作成結果が不明です。docs/NOTION.mdの照合手順を確認してください。</p>' : ''}${ws?.notion?.conflict ? `<div class="conflict"><strong>更新の競合</strong><pre class="proposal">${esc(JSON.stringify(ws.notion.conflict.remote, null, 2))}</pre><div class="row"><button data-resolve="notion">Notion側を採用</button><button data-resolve="app">アプリ側を採用</button></div></div>` : ''}</section><section><h3>AIファシリテータの動作（Markdown）</h3><p class="muted">このmdをAIの指示として読み込みます。AI未接続時は先頭設定の基本ガイドを使います。JSON設定ブロックを保持してください。</p><form id="facilitator-form"><label for="facilitator-md">ファシリテータ用md</label><textarea id="facilitator-md" class="markdown-editor" spellcheck="false" maxlength="120000">${esc(facilitator.markdown)}</textarea><div class="row"><button class="primary">mdを保存</button><a href="/api/facilitator/export">mdをダウンロード ↓</a></div><p id="facilitator-save-status" role="status"></p></form></section><section><h3>AI接続とモデル</h3><p class="muted">AIはすべてGenspark経由で実行します。画像モデルはGPT Image 2.5です。</p><form id="genspark-connect"><label for="genspark-api-key">Genspark GSK APIキー（秘密設定）</label><input id="genspark-api-key" type="password" autocomplete="new-password" placeholder="gsk-…" maxlength="1000" required><button class="primary">Gensparkに接続</button><p class="muted">サーバーにのみ保存します。登録後はキーを表示しません。</p></form><form id="ai-settings"><label for="ai-provider">使用サービス</label><select id="ai-provider"><option value="genspark-enterprise">Genspark Enterprise（既定）</option>${me.ai.approved
       .filter((p) => p.id !== 'genspark-enterprise')
       .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
       .join(
         '',
-      )}</select><label for="ai-model">モデル（空欄＝サービス既定モデル）</label><input id="ai-model" value="${esc(me.ai.model)}" maxlength="150" placeholder="未指定"><label for="ai-prompt">画像生成プロンプト</label><textarea id="ai-prompt" maxlength="6000" placeholder="後日、画像生成用プロンプトを設定してください">${esc(me.ai.imagePrompt)}</textarea><p class="muted">質問・分類・文字起こし・要約・キーワード・画像生成のすべてに、この制限を適用します。</p><button class="primary">AI設定を保存</button></form></section>${ws ? `<section><h3>成果物の保存</h3><p class="muted">WSの状態を「完了（変更不可）」にすると、管理者がPNG・Markdownを保存できます。</p>${ws.status === '完了（変更不可）' ? teams.map((t) => `<div class="export-links"><strong class="muted">${esc(t.name)}</strong><a href="/api/workshops/${ws.id}/export?team=${t.id}&format=md">文章 Markdown ↓</a>${t.image ? `<a href="/api/workshops/${ws.id}/export?team=${t.id}&format=png">画像 PNG ↓</a>` : ''}</div>`).join('') : ''}<button id="notion-results"${disabled(ws.status === '完了（変更不可）' && !!ws.notion && connection.enabled)}>NotionのWS配下へ成果を保存</button></section>` : ''}</div>`,
+      )}</select><label for="ai-model">モデル（空欄＝サービス既定モデル）</label><input id="ai-model" value="${esc(me.ai.model)}" maxlength="150" placeholder="未指定"><label for="ai-press-prompt">模擬プレスリリース作成用プロンプト</label><textarea id="ai-press-prompt" class="generation-prompt" maxlength="6000">${esc(me.ai.pressReleasePrompt || '')}</textarea><label for="ai-prompt">企画提案シート作成用プロンプト（Genspark / GPT Image 2.5）</label><textarea id="ai-prompt" class="generation-prompt" maxlength="6000">${esc(me.ai.imagePrompt)}</textarea><p class="muted">質問・分類・文字起こし・文章生成・画像生成はGensparkのみを使用します。文章モデルを空欄にするとGensparkの契約既定モデルを使います。</p><button class="primary">AI設定を保存</button></form></section>${ws ? `<section><h3>成果物の保存</h3><p class="muted">WSの状態を「完了（変更不可）」にすると、管理者がPNG・Markdownを保存できます。</p>${ws.status === '完了（変更不可）' ? teams.map((t) => `<div class="export-links"><strong class="muted">${esc(t.name)}</strong><a href="/api/workshops/${ws.id}/export?team=${t.id}&format=md">文章 Markdown ↓</a>${t.image ? `<a href="/api/workshops/${ws.id}/export?team=${t.id}&format=png">画像 PNG ↓</a>` : ''}</div>`).join('') : ''}<button id="notion-results"${disabled(ws.status === '完了（変更不可）' && !!ws.notion && connection.enabled)}>NotionのWS配下へ成果を保存</button></section>` : ''}</div>`,
   );
   bindContentStatus();
   if (ws) {
@@ -1831,12 +2082,29 @@ async function settings() {
     $('#facilitator-save-status').textContent = 'mdを保存しました。次の助言から反映します。';
   });
   $('#ai-provider').value = me.ai.provider;
+  $('#genspark-connect').onsubmit = guarded(async (e) => {
+    e.preventDefault();
+    const input = $('#genspark-api-key'),
+      button = $('#genspark-connect button');
+    button.disabled = true;
+    try {
+      me.ai = await api('/api/ai/connect', { apiKey: input.value.trim() });
+      input.value = '';
+      modal.close();
+      await settings();
+      toast('Gensparkに接続しました');
+    } finally {
+      input.value = '';
+      if (button.isConnected) button.disabled = false;
+    }
+  });
   $('#ai-settings').onsubmit = guarded(async (e) => {
     e.preventDefault();
     me.ai = await api('/api/ai/settings', {
       provider: $('#ai-provider').value,
       model: $('#ai-model').value,
       imagePrompt: $('#ai-prompt').value,
+      pressReleasePrompt: $('#ai-press-prompt').value,
     });
     toast('AI設定を保存しました');
     render();
@@ -1888,6 +2156,7 @@ async function poll() {
     modal.open ||
     recording ||
     recordingStarting ||
+    pointerDragging ||
     mapDragId ||
     mapConnectId
   )
@@ -1895,6 +2164,7 @@ async function poll() {
   polling = true;
   try {
     const [latestMe, latestList] = await Promise.all([api('/api/me'), api('/api/workshops')]);
+    if (pointerDragging) return;
     const roleChanged = latestMe.admin !== me.admin;
     const stateChanged = latestMe.notion.state !== me.notion.state;
     const listChanged = JSON.stringify(latestList) !== JSON.stringify(workshops);
@@ -1912,6 +2182,7 @@ async function poll() {
       return;
     }
     const latest = await api(`/api/workshops/${ws.id}`);
+    if (pointerDragging) return;
     if (tab === 0 && !stateChanged && !listChanged && mapShape(latest) === mapShape(ws)) {
       ws = latest;
       refreshVotingUI();

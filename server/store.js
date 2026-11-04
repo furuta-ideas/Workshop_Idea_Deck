@@ -119,6 +119,9 @@ export function newTeam(name) {
     discussion: {
       running: false,
       transcript: '',
+      headline: '',
+      features: ['', '', ''],
+      pressRelease: '',
       what: '',
       who: '',
       how: '',

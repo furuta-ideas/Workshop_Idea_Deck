@@ -34,6 +34,44 @@ function setup(t) {
   ) => mutate(store, user, ws.id, { action, payload, revision, requestId });
   return { store, admin, editor, viewer, ws, team, other, act };
 }
+
+test('編集者は自チームから①②の投票を開始・加算・取消でき、閲覧者と他チームは拒否', (t) => {
+  const f = setup(t),
+    target = f.team.nodes[0].id;
+  f.act(f.editor, 'timer', { phase: 'cards', teamId: f.team.id });
+  let w = f.act(f.editor, 'vote', { phase: 'cards', target, delta: 1 });
+  assert.equal(w.votes.cards[f.editor.email][target], 1);
+  w = f.act(f.editor, 'vote', { phase: 'cards', target, delta: -1 });
+  assert.equal(w.votes.cards[f.editor.email][target], 0);
+  assert.throws(() => f.act(f.editor, 'timer', { phase: 'cards', teamId: f.other.id }));
+  assert.throws(() => f.act(f.viewer, 'timer', { phase: 'cards', teamId: f.team.id }));
+  assert.throws(() => f.act(f.editor, 'timer', { phase: 'ideas', teamId: f.team.id }));
+});
+
+test('企画の一言・３つの特長・原稿を保存し、行数と文字数を検証する', (t) => {
+  const f = setup(t);
+  const w = f.act(f.editor, 'discussion', {
+    teamId: f.team.id,
+    headline: '新しい提案',
+    features: ['簡単に使える', 'すぐに始められる', '地域で続けられる'],
+    pressRelease: '企画原稿',
+  });
+  assert.equal(w.teams[f.team.id].discussion.headline, '新しい提案');
+  assert.deepEqual(w.teams[f.team.id].discussion.features, [
+    '簡単に使える',
+    'すぐに始められる',
+    '地域で続けられる',
+  ]);
+  assert.throws(() =>
+    f.act(f.editor, 'discussion', { teamId: f.team.id, features: ['1', '2', '3', '4'] }),
+  );
+  assert.throws(() =>
+    f.act(f.editor, 'discussion', { teamId: f.team.id, features: ['改行\n不可'] }),
+  );
+  assert.throws(() =>
+    f.act(f.editor, 'discussion', { teamId: f.team.id, headline: 'あ'.repeat(101) }),
+  );
+});
 test('閲覧者は全てのデータ変更を拒否、他チームの編集も拒否', (t) => {
   const f = setup(t);
   for (const action of ['node', 'deck', 'discussion', 'vote', 'settings', 'addTeam', 'timer'])

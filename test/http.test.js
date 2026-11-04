@@ -646,6 +646,53 @@ test('HTTP: AI提案は確認前に変更せず、16:9画像の適用・④投�
   assert.equal(image.headers.get('content-type'), 'image/png');
 });
 
+test('HTTP: Gensparkキーは管理者のみ登録・非公開、模擬原稿は確認して適用する', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test');
+  let verified;
+  f.app.ai.genspark.verify = async (key) => {
+    verified = key;
+  };
+  const connected = await f.req('/api/ai/connect', { apiKey: 'gsk-test-fixture-secret' }, admin);
+  assert.equal(connected.status, 200);
+  assert.equal(verified, 'gsk-test-fixture-secret');
+  assert.doesNotMatch(JSON.stringify(connected.body), /fixture-secret/);
+  assert.doesNotMatch(
+    JSON.stringify((await f.req('/api/me', undefined, admin)).body),
+    /fixture-secret/,
+  );
+  assert.equal((await f.req('/api/ai/connect', { apiKey: 'gsk-test-fixture-secret' })).status, 401);
+  const ws = (await f.req('/api/workshops', { name: '原稿テスト' }, admin)).body,
+    teamId = Object.keys(ws.teams)[0];
+  const prompts = await f.req(
+    '/api/ai/settings',
+    { provider: 'genspark-gsk', model: '', pressReleasePrompt: 'カスタム新聞記事プロンプト' },
+    admin,
+  );
+  assert.match(prompts.body.imagePrompt, /３つの特長/);
+  f.app.ai.genspark.run = async (task, input, key, settings) => {
+    assert.equal(task, 'pressRelease');
+    assert.equal(key, 'gsk-test-fixture-secret');
+    assert.equal(settings.pressReleasePrompt, 'カスタム新聞記事プロンプト');
+    assert.ok(input.discussion);
+    return { text: '明日からつながる地域の新しい一歩\n地域の課題を解決する企画構想。' };
+  };
+  const proposal = await f.req(
+    `/api/workshops/${ws.id}/ai`,
+    { task: 'pressRelease', teamId },
+    admin,
+  );
+  assert.equal(proposal.status, 200);
+  assert.equal(f.app.store.get('workshops', ws.id).teams[teamId].discussion.pressRelease, '');
+  const applied = await f.req(
+    `/api/workshops/${ws.id}/apply`,
+    { proposal: proposal.body.proposal },
+    admin,
+  );
+  assert.equal(applied.status, 200);
+  assert.match(applied.body.teams[teamId].discussion.pressRelease, /明日/);
+});
+
 test('HTTP: 既存セッションの管理者権限はNotionの最新メンバーから再計算し、陳腐化時は剥奪', async (t) => {
   const f = await setup(t);
   const email = 'member@example.test';

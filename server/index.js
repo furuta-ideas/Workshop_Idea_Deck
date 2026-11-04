@@ -274,6 +274,12 @@ export function createApp(config = configuration(), overrides = {}) {
         json(res, ai.save(body));
         return;
       }
+      if (path === '/api/ai/connect' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        rateLimit(store, `ai-connect:${user.email}`, 5, 600000);
+        json(res, await ai.connect(body.apiKey));
+        return;
+      }
       if (path === '/api/facilitator') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
         json(
@@ -558,6 +564,7 @@ export function createApp(config = configuration(), overrides = {}) {
             );
         } else if (p.task === 'summarize') {
           for (const [key, max] of Object.entries({
+            headline: 100,
             what: 40,
             who: 40,
             how: 120,
@@ -565,6 +572,9 @@ export function createApp(config = configuration(), overrides = {}) {
             keywords: 500,
           }))
             if (r[key] !== undefined) team.discussion[key] = text(r[key], max);
+        } else if (p.task === 'pressRelease') {
+          team.discussion.pressRelease = text(r.text, 2000);
+          requireThat(team.discussion.pressRelease, '原稿が返りませんでした', 502);
         } else if (p.task === 'keywords') team.discussion.keywords = text(r.keywords, 500);
         else if (p.task === 'classify') {
           const before = team.nodes.map((n) => ({ id: n.id, group: n.group }));

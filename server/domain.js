@@ -343,11 +343,23 @@ export function mutate(store, user, wsId, body) {
         '1票以上のカードを選択してください',
       );
       team.deck = p.ids;
+      if (p.slots !== undefined) {
+        requireThat(
+          Array.isArray(p.slots) &&
+            p.slots.length === 5 &&
+            p.slots.every((id) => id === null || p.ids.includes(id)) &&
+            JSON.stringify(p.slots.filter(Boolean)) === JSON.stringify(p.ids),
+          'デッキの配置が不正です',
+        );
+        team.deckSlots = p.slots;
+      } else team.deckSlots = [...p.ids, ...Array(5 - p.ids.length).fill(null)];
     } else if (body.action === 'discussion') {
       const team = teamFor(ws, user, p.teamId),
         d = team.discussion;
       for (const [key, max] of Object.entries({
         transcript: 30000,
+        headline: 100,
+        pressRelease: 2000,
         what: 40,
         who: 40,
         how: 120,
@@ -355,6 +367,14 @@ export function mutate(store, user, wsId, body) {
         keywords: 500,
       }))
         if (p[key] !== undefined) d[key] = text(p[key], max);
+      if (p.features !== undefined) {
+        requireThat(Array.isArray(p.features) && p.features.length <= 3, '特長は３つまでです');
+        d.features = p.features.map((value) => {
+          const line = text(value, 200);
+          requireThat(!/[\r\n]/.test(line), '特長は１行ずつ入力してください');
+          return line;
+        });
+      }
       if (p.running !== undefined) {
         requireThat(typeof p.running === 'boolean', '状態が不正です');
         if (d.running && !p.running)
@@ -365,6 +385,9 @@ export function mutate(store, user, wsId, body) {
             who: d.who,
             how: d.how,
             points: d.points,
+            headline: d.headline || '',
+            features: d.features || [],
+            pressRelease: d.pressRelease || '',
           });
         d.running = p.running;
       }
@@ -389,8 +412,11 @@ export function mutate(store, user, wsId, body) {
         }
       }
     } else if (body.action === 'timer') {
-      requireThat(user.admin, '管理者のみ操作できます', 403);
       requireThat(['cards', 'ideas'].includes(p.phase), '投票種別が不正です');
+      if (!user.admin) {
+        requireThat(p.phase === 'cards', '管理者のみ操作できます', 403);
+        teamFor(ws, user, p.teamId);
+      }
       ws.timers[p.phase] = p.stop
         ? { ...ws.timers[p.phase], closed: true }
         : { endsAt: Date.now() + ws.durations[p.phase] * 1000, closed: false };
@@ -457,7 +483,12 @@ export function markdown(ws, team) {
     for (const k of keywords) v = v.split(clean(k)).join(`**${clean(k)}**`);
     return v;
   };
-  return `# ${clean(ws.name)} / ${clean(team.name)}\n\nWHAT: ${bold(d.what)}\n\nWHO: ${bold(d.who)}\n\nHOW: ${bold(d.how)}\n\n${d.points
+  return `# ${clean(ws.name)} / ${clean(team.name)}\n\n一言で言うと: ${bold(d.headline || '')}\n\nWHO: ${bold(d.who)}\n\nWHAT: ${bold(d.what)}\n\nHOW: ${bold(d.how)}\n\n## ３つの特長\n\n${(
+    d.features || []
+  )
+    .filter(Boolean)
+    .map((x) => '- ' + bold(x))
+    .join('\n')}\n\n## 模擬プレスリリース\n\n${clean(d.pressRelease || '')}\n\n${d.points
     .split('\n')
     .filter(Boolean)
     .map((x) => '- ' + bold(x))

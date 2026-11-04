@@ -1,5 +1,17 @@
 # AIの認可とGateway契約
 
+## v0.12：Genspark専用接続
+
+現在はAIアドバイス・分類・録音文字起こし・文章・画像をすべてGenspark経由に限定します。画像モデルは`gpt-image-2.5`です。管理者設定の「Genspark GSK APIキー」に有効なキーを登録すると、公式GSK APIを使います。確認に成功したキーだけを非公開の永続ストレージへ保存し、API応答・画面・監査ログへ返しません。既存の社内Genspark Gatewayも継続できます。
+
+公式GSKの文章接続は`GET https://www.genspark.ai/api/tool_cli/opencode-config`で許可モデルとプロキシURLを取得し、そのGensparkドメインのOpenAI互換APIへ送ります。画像は`POST /api/tool_cli/image_generation`（model=`gpt-image-2.5`, aspect_ratio=`16:9`, image_size=`2k`, tier=`flare`）。録音は公式の`file/upload_url`と非公開ストレージを経て`audio_transcribe`を使います。GSKのNDJSON最終応答を読み、失敗時は再送・別AIへの切替を行いません。
+
+模擬プレスリリース用の`pressRelease`タスクを追加し、応答は`{"text":"タイトルと約400字の原稿"}`です。Gatewayへは`prompt`に管理者の文章用指示を渡します。画像タスクには別の管理者プロンプトと画像モデル名を渡します。文章モデルは空欄ならGensparkのカタログ既定モデルを使います。管理者のプロンプトは非公開KVのAI設定へ保存します。
+
+接続仕様の一次資料：[Genspark公式CLI](https://www.npmjs.com/package/@genspark/cli)、[Genspark法人FAQ](https://www.genspark.ai/ja/business/faq)。CLI 1.15.3の公開ソースを参照しました。実アカウントのAPI接続が401の場合はGSKキーを再発行し、管理者設定から登録してください。Genspark画面での画像利用可否とは別に、API側の認証を確認します。
+
+以下は既存の社内Gatewayアダプターの契約です。
+
 本書のGatewayは**本アプリが定義する接続アダプター**です。Gensparkの公開エンドポイントやGSKのAPI仕様を表すものではありません。
 
 ## 接続前に必要な情報

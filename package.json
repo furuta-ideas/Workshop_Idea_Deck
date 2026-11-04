@@ -1,6 +1,6 @@
 {
   "name": "workshop-idea-deck",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,7 +13,8 @@
     "test": "node --test --test-concurrency=1",
     "check": "node scripts/check.js",
     "build:cloudflare": "node scripts/build-cloudflare.js",
-    "deploy:api": "wrangler deploy"
+    "deploy:api": "wrangler deploy",
+    "check:browser": "node scripts/check-browser.js"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.2.2",

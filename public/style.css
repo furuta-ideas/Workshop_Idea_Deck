@@ -2872,6 +2872,100 @@ dialog .close {
   max-height: 300px;
   grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
 }
+.pointer-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: 320px;
+  padding: 8px 14px;
+  color: white;
+  background: #31544dec;
+  border: 1px solid #c5e4cf;
+  border-radius: 7px;
+  box-shadow: 0 4px 18px #0003;
+}
+.node.dragging,
+.sticky.dragging {
+  opacity: 0.38;
+}
+.deck-discussion {
+  display: block;
+}
+.deck-discussion .discussion-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 28px;
+}
+.discussion-heading {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.discussion-heading button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.discussion-heading svg {
+  width: 18px;
+  height: 18px;
+}
+.outline-field {
+  margin: 10px 0;
+}
+.outline-field label {
+  display: block;
+  margin-bottom: 5px;
+}
+.summary .features {
+  display: grid;
+  gap: 8px;
+  border: 0;
+  padding: 12px 0;
+  margin: 0;
+}
+.summary .features legend {
+  font-weight: bold;
+  padding: 0;
+}
+.summary .press-release {
+  min-height: 180px;
+}
+.visualize-button {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  background: linear-gradient(110deg, #f17819, #ed5312);
+  color: #fff;
+  border-color: #e15a14;
+  font-weight: 700;
+  box-shadow: 0 4px 12px #e7671928;
+}
+.visualize-button:hover {
+  background: #e35a0d;
+  color: #fff;
+}
+.generation-prompt {
+  min-height: 210px;
+}
+#genspark-connect {
+  margin: 16px 0 22px;
+}
+#genspark-connect button {
+  margin-top: 8px;
+}
+.generated-proposal {
+  margin-top: 20px;
+  padding: 20px;
+}
+.generated-proposal img {
+  max-width: 100%;
+  height: auto;
+}
+@media (max-width: 900px) {
+  .deck-discussion .discussion-editor {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 800px) {
   .casino-deck .deck {
     display: flex;

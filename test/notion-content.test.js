@@ -388,6 +388,56 @@ test('Notion本文: 外部編集を再読込みし、不正JSONは全体を巻�
   assert.match(w.documentSync.error, /JSON/);
   assert.deepEqual(w.teams, before);
 });
+
+test('Notion本文: ③の一言・３つの特長・模擬プレスリリースを往復保存する', async (t) => {
+  const f = fixture(t);
+  await f.load();
+  let w = await f.change('discussion', {
+    teamId: f.team.id,
+    headline: '地域をつなぐ',
+    features: ['簡単に始められる', 'みんなで使える', '継続できる'],
+    pressRelease: '地域の課題を解決する新しい構想。',
+    running: true,
+  });
+  w = await f.change('discussion', { teamId: f.team.id, running: false });
+  assert.equal(w.documentSync.error, null);
+  const code = f.n.content.record(f.n.content.state(w).doc, w.teams[f.team.id], 3).code;
+  const r = JSON.parse(text(f.find(code.id)));
+  assert.equal(r.discussion.headline, '地域をつなぐ');
+  assert.equal(r.discussion.features.length, 3);
+  r.discussion.headline = 'Notionで編集した一言';
+  r.discussion.features[1] = 'Notionで編集した特長';
+  f.find(code.id).code.rich_text = rt(JSON.stringify(r));
+  f.state.version++;
+  w = await f.load();
+  assert.equal(w.documentSync.error, null);
+  assert.equal(w.teams[f.team.id].discussion.headline, 'Notionで編集した一言');
+  assert.equal(w.teams[f.team.id].discussion.features[1], 'Notionで編集した特長');
+  assert.equal(w.teams[f.team.id].discussion.pressRelease, '地域の課題を解決する新しい構想。');
+  assert.equal(w.teams[f.team.id].discussion.rounds[0].features.length, 3);
+});
+
+test('Notion本文: ドロップした空き枠の位置を保持し、デッキだけの外部編集も読み込む', async (t) => {
+  const f = fixture(t);
+  await f.load();
+  await f.change('timer', { phase: 'cards' });
+  await f.change('vote', { phase: 'cards', target: 'first', delta: 1 });
+  let w = await f.change('deck', {
+    teamId: f.team.id,
+    ids: ['first'],
+    slots: [null, null, 'first', null, null],
+  });
+  assert.equal(w.documentSync.error, null);
+  const code = f.n.content.record(f.n.content.state(w).doc, w.teams[f.team.id], 2).code;
+  const r = JSON.parse(text(f.find(code.id)));
+  assert.deepEqual(r.deckSlots, [null, null, 'first', null, null]);
+  r.deck = [];
+  f.find(code.id).code.rich_text = rt(JSON.stringify(r));
+  f.state.version++;
+  w = await f.load();
+  assert.equal(w.documentSync.error, null);
+  assert.deepEqual(w.teams[f.team.id].deck, []);
+});
 test('Notion本文: Notionで変更された同一トピックを上書きせず409で新内容を取り込む', async (t) => {
   const f = fixture(t);
   await f.load();

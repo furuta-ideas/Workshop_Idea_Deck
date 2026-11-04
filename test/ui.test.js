@@ -170,7 +170,13 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
       }
       if (body.action === 'reparent')
         team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
-      if (body.action === 'deck') team.deck = [...body.payload.ids];
+      if (body.action === 'deck') {
+        team.deck = [...body.payload.ids];
+        team.deckSlots = body.payload.slots || [
+          ...team.deck,
+          ...Array(5 - team.deck.length).fill(null),
+        ];
+      }
       if (body.action === 'discussion') Object.assign(team.discussion, body.payload);
       if (body.action === 'timer')
         ws.timers[body.payload.phase] = {
@@ -273,7 +279,7 @@ test('DOM: ②は得票のみ・多い順ソート・自分の取消だけを表
   assert.doesNotMatch(f.doc.querySelector('.deck-workspace').textContent, /得票したカード/);
 });
 
-test('DOM: 上下ボタン・Alt上下・ドラッグの挿入線で兄弟の順番を変える', async (t) => {
+test('DOM: 上下ボタン・ドラッグの挿入線で兄弟の順番を変え、Alt上下は何もしない', async (t) => {
   const f = await setup(t);
   f.team.nodes.push({ id: 'node-b', text: 'B', parent: 'theme', group: 1 });
   f.ws.revision++;
@@ -297,7 +303,7 @@ test('DOM: 上下ボタン・Alt上下・ドラッグの挿入線で兄弟の順
   await settle();
   assert.deepEqual(
     f.team.nodes.map((n) => n.id),
-    ['node-1', 'node-b'],
+    ['node-b', 'node-1'],
   );
   const source = f.doc.querySelector('[data-node="node-b"]'),
     target = f.doc.querySelector('[data-node="node-1"]');
@@ -549,9 +555,11 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
   click(f, '[data-tab="2"]');
   assert.equal(f.doc.querySelectorAll('[data-slot]').length, 5);
   assert.ok(f.doc.querySelector('#discussion-form'));
-  assert.ok(f.doc.querySelector('#record-discussion').disabled);
+  assert.equal(f.doc.querySelector('#record-discussion').disabled, false);
+  f.team.discussion.keywords = '地域';
+  f.ws.revision++;
+  await f.state.poll();
   f.doc.querySelector('#what').value = '地域の交流';
-  f.doc.querySelector('#keywords').value = '地域';
   click(f, '#preview-summary');
   assert.match(f.doc.querySelector('.summary-preview').innerHTML, /<strong>地域<\/strong>/);
   f.window.document.querySelector('#modal-close').click();
@@ -814,7 +822,8 @@ test('DOM: 得票カードをデッキへドロップし、カードを別スロ
   };
   await drop('node-1', 0);
   assert.ok(f.doc.querySelector('[data-slot="0"] > .deck-card.g0'));
-  assert.equal(f.doc.querySelector('[data-deck-card]').draggable, true);
+  assert.equal(f.doc.querySelector('[data-deck-card]').draggable, false);
+  assert.equal(typeof f.doc.querySelector('[data-deck-card]').onpointerdown, 'function');
   await drop('node-b', 1);
   await drop('node-b', 0);
   assert.deepEqual(f.team.deck, ['node-b', 'node-1']);
