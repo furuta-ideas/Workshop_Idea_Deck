@@ -40,6 +40,7 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
   };
   window.setInterval = (fn, milliseconds) => {
     if (milliseconds === 3000) state.poll = fn;
+    if (milliseconds === 1000) state.tick = fn;
     return 1;
   };
   t.after(() => window.close());
@@ -97,6 +98,7 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
           'pasteOutline',
           'topicTheme',
           'reparent',
+          'reorderTopic',
           'standalone',
           'deleteNode',
         ].includes(body.action)
@@ -152,11 +154,29 @@ async function setup(t, role = '管理者', loginState, viewState = {}) {
           }),
         );
       }
+      if (body.action === 'vote') {
+        const p = body.payload,
+          ballot = (ws.votes[p.phase][admin.email] ||= {});
+        ballot[p.target] = (ballot[p.target] || 0) + p.delta;
+      }
+      if (body.action === 'reorderTopic') {
+        const p = body.payload,
+          n = team.nodes.find((n) => n.id === p.id),
+          target = team.nodes.find((n) => n.id === p.targetId);
+        n.parent = target.parent;
+        const at = team.nodes.indexOf(n);
+        team.nodes.splice(at, 1);
+        team.nodes.splice(team.nodes.indexOf(target) + (p.position === 'after' ? 1 : 0), 0, n);
+      }
       if (body.action === 'reparent')
         team.nodes.find((n) => n.id === body.payload.id).parent = body.payload.parent;
       if (body.action === 'deck') team.deck = [...body.payload.ids];
       if (body.action === 'discussion') Object.assign(team.discussion, body.payload);
-      if (body.action === 'timer') ws.timers[body.payload.phase] = { endsAt: Date.now() + 180000 };
+      if (body.action === 'timer')
+        ws.timers[body.payload.phase] = {
+          endsAt: Date.now() + 180000,
+          closed: !!body.payload.stop,
+        };
       ws.revision++;
       data = view(ws, admin);
     } else data = { ok: true };
@@ -177,6 +197,134 @@ const click = (f, selector) => {
   assert.ok(el, selector);
   el.click();
 };
+
+test('DOM: マップ投票アイコン→＋／自分だけ−、投票してもノードとスクロール位置を保持', async (t) => {
+  const f = await setup(t);
+  f.team.nodes.push({ id: 'node-b', text: '別の案', parent: 'theme', group: 1 });
+  f.ws.votes.cards['other@example.test'] = { 'node-b': 1 };
+  f.ws.revision++;
+  await f.state.poll();
+  assert.equal(f.doc.querySelector('[data-topic-votes="node-1"] [data-vote]'), null);
+  click(f, '.map-panel [data-timer="cards"]');
+  await settle();
+  const node = f.doc.querySelector('[data-node="node-1"]'),
+    panel = f.doc.querySelector('.map-panel'),
+    scroll = f.doc.querySelector('.map-scroll');
+  scroll.scrollLeft = 120;
+  scroll.scrollTop = 80;
+  assert.equal(f.doc.querySelector('[data-topic-votes="node-b"] [data-delta="-1"]'), null);
+  click(f, '[data-topic-votes="node-1"] [data-delta="1"]');
+  await settle();
+  assert.equal(f.doc.querySelector('[data-node="node-1"]'), node);
+  assert.equal(f.doc.querySelector('.map-panel'), panel);
+  assert.equal(scroll.scrollLeft, 120);
+  assert.equal(scroll.scrollTop, 80);
+  assert.equal(f.doc.querySelector('[data-topic-votes="node-1"] .topic-total').textContent, '1');
+  assert.ok(f.doc.querySelector('[data-topic-votes="node-1"] [data-delta="-1"]'));
+  click(f, '[data-topic-votes="node-1"] [data-delta="-1"]');
+  await settle();
+  assert.equal(f.doc.querySelector('[data-topic-votes="node-1"] [data-delta="-1"]'), null);
+  click(f, '[data-tab="1"]');
+  assert.deepEqual(
+    [...f.doc.querySelectorAll('[data-card]')].map((n) => n.dataset.card),
+    ['node-b'],
+  );
+  assert.doesNotMatch(f.doc.querySelector('#step-content').textContent, /あなたの投票/);
+  f.ws.timers.cards.endsAt = Date.now() - 100;
+  f.ws.revision++;
+  await f.state.poll();
+  f.state.tick();
+  assert.equal(f.doc.querySelector('#step-content [data-vote]'), null);
+});
+
+test('DOM: ②は得票のみ・多い順ソート・自分の取消だけを表示し、③は5枠の下に絞込み済みカード', async (t) => {
+  const f = await setup(t);
+  f.team.nodes.push(
+    { id: 'node-b', text: 'B', parent: 'theme', group: 1 },
+    { id: 'node-c', text: 'C', parent: 'theme', group: 2 },
+  );
+  f.ws.votes.cards = {
+    'other@example.test': { 'node-1': 2, 'node-b': 5 },
+    'admin@example.test': { 'node-1': 1 },
+  };
+  f.ws.revision++;
+  await f.state.poll();
+  click(f, '[data-tab="1"]');
+  const ids = () => [...f.doc.querySelectorAll('[data-card]')].map((n) => n.dataset.card);
+  assert.deepEqual(ids(), ['node-1', 'node-b']);
+  click(f, '[data-timer="cards"]');
+  await settle();
+  assert.ok(f.doc.querySelector('[data-card="node-1"] [data-delta="-1"]'));
+  assert.equal(f.doc.querySelector('[data-card="node-b"] [data-delta="-1"]'), null);
+  click(f, '#sort-cards');
+  assert.deepEqual(ids(), ['node-b', 'node-1']);
+  click(f, '#sort-cards');
+  assert.deepEqual(ids(), ['node-1', 'node-b']);
+  click(f, '[data-card="node-1"] [data-delta="-1"]');
+  await settle();
+  assert.equal(f.doc.querySelector('[data-card="node-1"] [data-delta="-1"]'), null);
+  assert.equal(f.doc.querySelector('[data-card="node-1"] .badge').textContent, '2');
+  click(f, '[data-tab="2"]');
+  const panels = f.doc.querySelector('.deck-workspace').children;
+  assert.ok(panels[0].classList.contains('casino-deck'));
+  assert.ok(panels[1].classList.contains('narrowed-cards'));
+  assert.match(panels[1].querySelector('h3').textContent, /絞込み済みカード/);
+  assert.equal(f.doc.querySelectorAll('[data-slot]').length, 5);
+  assert.doesNotMatch(f.doc.querySelector('.deck-workspace').textContent, /得票したカード/);
+});
+
+test('DOM: 上下ボタン・Alt上下・ドラッグの挿入線で兄弟の順番を変える', async (t) => {
+  const f = await setup(t);
+  f.team.nodes.push({ id: 'node-b', text: 'B', parent: 'theme', group: 1 });
+  f.ws.revision++;
+  await f.state.poll();
+  click(f, '[data-node="node-1"]');
+  click(f, '#move-topic-down');
+  await settle();
+  assert.equal(
+    f.calls.filter((c) => c.body?.action === 'reorderTopic').at(-1).body.payload.position,
+    'after',
+  );
+  assert.deepEqual(
+    f.team.nodes.map((n) => n.id),
+    ['node-b', 'node-1'],
+  );
+  f.doc
+    .querySelector('[data-node="node-1"]')
+    .dispatchEvent(
+      new f.window.KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }),
+    );
+  await settle();
+  assert.deepEqual(
+    f.team.nodes.map((n) => n.id),
+    ['node-1', 'node-b'],
+  );
+  const source = f.doc.querySelector('[data-node="node-b"]'),
+    target = f.doc.querySelector('[data-node="node-1"]');
+  target.getBoundingClientRect = () => ({
+    top: 100,
+    height: 30,
+    left: 100,
+    right: 250,
+    width: 150,
+    bottom: 130,
+  });
+  const transfer = { setData() {}, getData: () => 'node-b' };
+  const event = (type) => {
+    const e = new f.window.MouseEvent(type, { bubbles: true, cancelable: true, clientY: 101 });
+    Object.defineProperty(e, 'dataTransfer', { value: transfer });
+    return e;
+  };
+  source.dispatchEvent(event('dragstart'));
+  target.dispatchEvent(event('dragover'));
+  assert.ok(target.classList.contains('map-drop-before'));
+  target.dispatchEvent(event('drop'));
+  await settle();
+  assert.deepEqual(
+    f.team.nodes.map((n) => n.id),
+    ['node-b', 'node-1'],
+  );
+});
 
 test('DOM: Deleteとメニュー削除は確認なしで子孫を消し、Ctrl+Zとボタンで枝を戻せる', async (t) => {
   const f = await setup(t);
@@ -387,6 +535,9 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
   topic.dispatchEvent(new f.window.FocusEvent('blur'));
   await settle();
   assert.equal(f.doc.querySelectorAll('[data-node]').length, 2);
+  f.ws.votes.cards['admin@example.test'] = Object.fromEntries(f.team.nodes.map((n) => [n.id, 1]));
+  f.ws.revision++;
+  await f.state.poll();
   click(f, '[data-tab="1"]');
   assert.equal(f.doc.querySelectorAll('[data-card]').length, 2);
   click(f, '[data-timer="cards"]');
@@ -396,7 +547,7 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
       f.doc.querySelector('[data-delta="1"]').disabled === false,
   );
   click(f, '[data-tab="2"]');
-  assert.equal(f.doc.querySelectorAll('[data-slot]').length, 3);
+  assert.equal(f.doc.querySelectorAll('[data-slot]').length, 5);
   assert.ok(f.doc.querySelector('#discussion-form'));
   assert.ok(f.doc.querySelector('#record-discussion').disabled);
   f.doc.querySelector('#what').value = '地域の交流';

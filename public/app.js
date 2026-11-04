@@ -48,6 +48,8 @@ let mapDragId = null,
   mapObserver = null,
   sessionEntered = false;
 const mapCollapsed = new Map();
+const cardSorts = new Map();
+let voteUiKey = '';
 let mapFit = false,
   mapUndoBusy = false;
 const advicePhases = ['ideation', 'selection', 'visualization', 'voting'];
@@ -131,20 +133,27 @@ function clearDraft() {
   editing = false;
 }
 async function action(action, payload) {
+  const activeWs = ws.id,
+    activeTeam = teamId;
   const result = await api(`/api/workshops/${ws.id}/action`, {
     action,
     payload,
     revision: ws.revision,
     requestId: crypto.randomUUID(),
   });
+  if (ws?.id !== activeWs || teamId !== activeTeam) return result;
   ws = result;
   pending = null;
   clearDraft();
-  render();
+  if (action === 'vote' && tab === 0 && !inlineEdit) {
+    refreshVotingUI();
+    updateClocks();
+  } else render();
   scheduleAdvice(
     {
       node: payload.id ? 'card_updated' : 'card_created',
       reparent: 'card_moved',
+      reorderTopic: 'card_moved',
       standalone: 'card_moved',
       deleteNode: 'card_deleted',
       deck: 'card_shortlisted',
@@ -504,7 +513,7 @@ function mapView() {
     canEdit = editableTeam();
   const topic = (n, depth) => {
     const edit = inlineEdit?.id === n.id;
-    return `<div class="topic-box depth-${Math.min(4, depth)}"><${edit ? 'input' : 'button'} class="node ${selected === n.id ? 'selected' : ''} ${edit ? 'topic-editor' : ''}" ${edit ? `id="topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="トピックを編集"` : `data-node="${n.id}" data-map-target="${n.id}" draggable="${canEdit}" title="ダブルクリックで編集。Enterで同じ階層、Insertで子トピック"`} data-depth="${depth}" data-topic-id="${n.id}">${edit ? '' : `<span><i class="node-group g${n.group || 0}" aria-hidden="true"></i>${esc(n.text)}</span></button>`}${edit ? '' : nodes.some((c) => c.parent === n.id) ? `<button class="topic-toggle" data-collapse="${n.id}" aria-label="${esc(n.text)}を${closed.has(n.id) ? '展開' : '折り畳む'}" aria-expanded="${!closed.has(n.id)}">${closed.has(n.id) ? descendantCount(n.id, nodes) : '−'}</button>` : ''}</div>`;
+    return `<div class="topic-box depth-${Math.min(4, depth)}"><${edit ? 'input' : 'button'} class="node ${selected === n.id ? 'selected' : ''} ${edit ? 'topic-editor' : ''}" ${edit ? `id="topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="トピックを編集"` : `data-node="${n.id}" data-map-target="${n.id}" draggable="${canEdit}" title="ダブルクリックで編集。Enterで同じ階層、Insertで子トピック"`} data-depth="${depth}" data-topic-id="${n.id}">${edit ? '' : `<span><i class="node-group g${n.group || 0}" aria-hidden="true"></i>${esc(n.text)}</span></button>`}${edit ? '' : nodes.some((c) => c.parent === n.id) ? `<button class="topic-toggle" data-collapse="${n.id}" aria-label="${esc(n.text)}を${closed.has(n.id) ? '展開' : '折り畳む'}" aria-expanded="${!closed.has(n.id)}">${closed.has(n.id) ? descendantCount(n.id, nodes) : '−'}</button>` : ''}${edit ? '' : `<span class="topic-votes" data-topic-votes="${n.id}">${topicVoteContents(n)}</span>`}</div>`;
   };
   const branch = (parent, depth = 1) => {
     if (depth > 500) return '';
@@ -515,7 +524,7 @@ function mapView() {
     return `<ul class="branches">${children.map((n) => `<li class="tree-item">${topic(n, depth)}${closed.has(n.id) ? '' : branch(n.id, depth + 1)}</li>`).join('')}</ul>`;
   };
   const rootEdit = inlineEdit?.id === 'theme';
-  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions"><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="undo-map" class="text-button" title="マップ操作を取り消す（Ctrl＋Z・最大20操作）"${disabled(canEdit && !mapUndoBusy)}>↶ 元に戻す</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
+  return `<div class="map-layout"><div class="panel map-panel"><div class="panel-title"><h3>気づきのマインドマップ <span class="muted">${esc(t.name)} · ${t.nodes.length} 項目</span></h3><div class="board-actions">${compactVoting()}<button id="move-topic-up" class="toolbar-icon" title="上へ移動（Alt＋↑）" aria-label="トピックを上へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↑</button><button id="move-topic-down" class="toolbar-icon" title="下へ移動（Alt＋↓）" aria-label="トピックを下へ移動"${disabled(canEdit && !!selected && selected !== 'theme')}>↓</button><button id="new-topic" class="text-button"${disabled(canEdit)}>＋ トピック</button><button id="undo-map" class="text-button" title="マップ操作を取り消す（Ctrl＋Z・最大20操作）"${disabled(canEdit && !mapUndoBusy)}>↶ 元に戻す</button><button id="copy-outline" class="text-button" title="選択した枝をコピー（Ctrl＋C）">コピー</button><button id="paste-outline" class="text-button" title="階層を保って貼り付け（Ctrl＋V）"${disabled(canEdit)}>貼り付け</button><button id="map-record" class="toolbar-icon ${recording?.destination === 'map' ? 'is-recording' : ''}" aria-label="${recording?.destination === 'map' ? '音声入力を停止' : 'マイクで音声入力'}" title="音声入力"${disabled(canEdit)}>${micIcon()}</button><button id="topic-actions" class="toolbar-icon" aria-label="トピックの操作" title="選択中のトピックを操作"${disabled(canEdit && !!selected)}>⋯</button><button id="collapse-all" class="text-button">全て折り畳む</button><button id="expand-all" class="text-button">全て展開</button><button id="zoom-out" class="text-button" aria-label="縮小">−</button><span id="zoom-label">${Math.round(zoom * 100)}%</span><button id="fit-map" class="toolbar-icon" aria-label="画面サイズに合わせて全トピックを表示" title="画面サイズに合わせる"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M7 7h10v10H7z"/></svg></button><button id="zoom-in" class="text-button" aria-label="拡大">＋</button></div></div>
   <div class="map-scroll" data-map-zone="detach"><div class="map-stage" id="map-stage"><div class="mindmap" id="mindmap"><svg id="map-links" class="map-links" aria-hidden="true"></svg><div class="connected-map"><div class="topic-box central-topic">${rootEdit ? `<input id="topic-editor" class="map-root topic-editor" value="${esc(inlineEdit.text)}" maxlength="500" aria-label="中心トピックを編集">` : `<button class="map-root ${selected === 'theme' ? 'selected' : ''}" data-map-target="theme" title="ダブルクリックで中心トピックを編集">${esc(t.rootText || ws.theme)}</button>`}${nodes.some((n) => n.parent === 'theme' || n.parent === null) ? `<button class="topic-toggle" data-collapse="theme" aria-label="中心トピックを${closed.has('theme') ? '展開' : '折り畳む'}" aria-expanded="${!closed.has('theme')}">${closed.has('theme') ? descendantCount('theme', nodes) : '−'}</button>` : ''}</div>${closed.has('theme') ? '' : branch('theme')}</div></div></div></div><div class="map-help" role="status">${mapConnectId ? '接続先をクリックしてください' : 'ダブルクリック：編集 · Enter：同階層 · Insert：子 · Delete：枝ごと削除 · Ctrl＋Z：取り消し · ドラッグ：移動'}</div></div></div>`;
 }
 function topicActionsDialog() {
@@ -825,30 +834,113 @@ function votingOpen(phase) {
     ws.timers[phase].endsAt > Date.now()
   );
 }
+function votingIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m8 3 9 5-4 7-9-5 4-7ZM4 13H2v8h20v-8h-5M8 13h8"/><path d="m9 7 2 3 4-1"/></svg>';
+}
+function compactVotingContents() {
+  const open = votingOpen('cards'),
+    used = Object.values(ws.votes.cards.mine).reduce((a, b) => a + b, 0);
+  return `<button class="toolbar-icon ${open ? 'voting-active' : ''}" ${open ? 'data-stop' : 'data-timer'}="cards" aria-label="${open ? 'カード投票を締め切る' : 'カード投票を開始'}" aria-pressed="${!!open}" title="${open ? 'カード投票を締め切る' : 'カード投票を開始'}"${disabled(me.admin && writable())}>${votingIcon()}</button><span class="vote-budget" title="残りの票 / 持ち票">${ws.budgets.cards - used}/${ws.budgets.cards}</span><span class="vote-clock" data-clock="cards"></span>`;
+}
+function compactVoting() {
+  return `<div class="compact-voting">${compactVotingContents()}</div>`;
+}
+function cardVoteButtons(n) {
+  if (!votingOpen('cards') || !editableTeam()) return '';
+  const mine = ws.votes.cards.mine[n.id] || 0,
+    used = Object.values(ws.votes.cards.mine).reduce((a, b) => a + b, 0);
+  return `${mine > 0 ? `<button class="vote-minus" data-vote="cards" data-target="${n.id}" data-delta="-1" aria-label="${esc(n.text)}の自分の投票を取り消す" title="自分の${mine}票から1票を取り消す">−</button>` : ''}<button class="vote-plus" data-vote="cards" data-target="${n.id}" data-delta="1" aria-label="${esc(n.text)}に投票する" title="1票を投じる"${disabled(used < ws.budgets.cards)}>＋</button>`;
+}
+function topicVoteContents(n) {
+  const total = ws.votes.cards.totals[n.id] || 0;
+  return `${total > 0 ? `<span class="topic-total" aria-label="${total}票">${total}</span>` : ''}${cardVoteButtons(n)}`;
+}
+function refreshVotingUI(force = false) {
+  if (!ws || !team()) return;
+  $('#mindmap')?.classList.toggle('map-voting-active', !!votingOpen('cards'));
+  const key = `${ws.id}/${teamId}/${tab}/${ws.revision}/${!!votingOpen('cards')}/${editableTeam()}`;
+  if (!force && key === voteUiKey) return;
+  voteUiKey = key;
+  $$('.compact-voting').forEach((el) => {
+    el.innerHTML = compactVotingContents();
+  });
+  $$('[data-topic-votes]').forEach((el) => {
+    const n = team().nodes.find((n) => n.id === el.dataset.topicVotes);
+    if (n) el.innerHTML = topicVoteContents(n);
+  });
+  $$('[data-card-votes]').forEach((el) => {
+    const n = team().nodes.find((n) => n.id === el.dataset.cardVotes);
+    if (n) el.innerHTML = cardVoteButtons(n);
+  });
+  bindVoting();
+  if (tab === 0) requestAnimationFrame(() => (mapFit ? fitMap() : updateMapStage()));
+}
+function mapShape(w) {
+  const t = w.teams[teamId];
+  return JSON.stringify([
+    w.name,
+    w.theme,
+    w.status,
+    w.deleted,
+    w.role,
+    w.myTeam,
+    w.notion?.error,
+    w.notion?.conflict,
+    w.notion?.provisioning,
+    w.creationError,
+    Object.values(w.teams).map((t) => [t.id, t.name]),
+    t?.rootText,
+    t?.nodes.map(({ id, text, parent, group }) => ({ id, text, parent, group })),
+  ]);
+}
+function bindVoting() {
+  $$('[data-vote]').forEach(
+    (b) =>
+      (b.onclick = guarded(async () => {
+        b.disabled = true;
+        try {
+          await action('vote', {
+            phase: b.dataset.vote,
+            target: b.dataset.target,
+            delta: Number(b.dataset.delta),
+          });
+        } finally {
+          if (b.isConnected) b.disabled = false;
+        }
+      })),
+  );
+  $$('[data-timer]').forEach(
+    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.timer }))),
+  );
+  $$('[data-stop]').forEach(
+    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.stop, stop: true }))),
+  );
+}
 function sticky(n, deck = false) {
-  const total = ws.votes.cards.totals[n.id] || 0,
-    mine = ws.votes.cards.mine[n.id] || 0;
-  return `<article class="sticky g${n.group}"${deck && editableTeam() ? ' draggable="true"' : ''} data-card="${n.id}"><span class="badge" aria-label="${total}票">${total}</span><p>${esc(n.text)}</p>${deck ? `<div class="sticky-votes"><span>グループ ${n.group + 1}</span><button class="plus" data-add-deck="${n.id}" aria-label="デッキへ追加"${disabled(editableTeam() && !team().deck.includes(n.id) && team().deck.length < 5)}>＋</button></div>` : `<div class="sticky-votes"><button data-vote="cards" data-target="${n.id}" data-delta="-1" aria-label="${esc(n.text)} の投票を取り消す"${disabled(votingOpen('cards') && editableTeam() && mine > 0)}>−</button><span>あなたの投票 ${mine}</span><button class="plus" data-vote="cards" data-target="${n.id}" data-delta="1" aria-label="${esc(n.text)} に投票する"${disabled(votingOpen('cards') && editableTeam())}>＋</button></div>`}</article>`;
+  const total = ws.votes.cards.totals[n.id] || 0;
+  return `<article class="sticky g${n.group}"${deck && editableTeam() ? ' draggable="true"' : ''} data-card="${n.id}"><span class="badge" aria-label="${total}票">${total}</span><p>${esc(n.text)}</p>${deck ? `<div class="sticky-votes"><button class="plus" data-add-deck="${n.id}" aria-label="デッキへ追加"${disabled(editableTeam() && !team().deck.includes(n.id) && team().deck.length < 5)}>＋</button></div>` : `<div class="sticky-votes card-vote-controls" data-card-votes="${n.id}">${cardVoteButtons(n)}</div>`}</article>`;
 }
 function cardView(deck) {
-  const nodes = [...team().nodes].filter((n) => !deck || ws.votes.cards.totals[n.id] > 0);
-  if (deck)
+  const nodes = team().nodes.filter((n) => (ws.votes.cards.totals[n.id] || 0) > 0);
+  const sorted = deck || cardSorts.get(adviceKey());
+  if (sorted)
     nodes.sort(
       (a, b) =>
         (ws.votes.cards.totals[b.id] || 0) - (ws.votes.cards.totals[a.id] || 0) ||
         team().nodes.indexOf(a) - team().nodes.indexOf(b),
     );
-  return `${deck ? '' : timerView('cards')}<div class="panel"><div class="panel-title"><h3>${deck ? '得票したカード' : 'チームの気づき'} <span class="muted">${nodes.length} 枚</span></h3><span class="muted">${deck ? '票数順 · ドラッグまたは＋でデッキへ' : '付箋の＋を押して投票'}</span></div>${nodes.length ? `<div class="sticky-grid">${nodes.map((n) => sticky(n, deck)).join('')}</div>` : '<div class="empty"><span class="symbol">▧</span><strong>まだカードがありません</strong>' + (deck ? '②で1票以上を獲得したカードが、ここに並びます。' : '①で言葉を入力すると、付箋としてここに並びます。') + '</div>'}</div>`;
+  return `<div class="panel narrowed-cards"><div class="panel-title"><h3>絞込み済みカード <span class="muted">${nodes.length}</span></h3><div class="row">${deck ? '' : compactVoting() + `<button id="sort-cards" class="toolbar-icon" aria-label="${sorted ? 'マップの順番に戻す' : '得票数の多い順に並べる'}" aria-pressed="${!!sorted}" title="${sorted ? 'マップの順番に戻す' : '得票数の多い順に並べる'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16M4 10h11M4 15h6M18 11v10m-3-3 3 3 3-3"/></svg></button>`}</div></div>${nodes.length ? `<div class="sticky-grid">${nodes.map((n) => sticky(n, deck)).join('')}</div>` : '<div class="empty">絞込み済みカードはありません</div>'}</div>`;
 }
+
 function deckView() {
   const t = team(),
     d = t.discussion,
-    slots = Math.max(3, Math.min(5, t.deck.length + 1));
-  return `<div class="deck-workspace"><div class="panel"><div class="panel-title"><h3>アイディアのデッキ <span class="muted">${t.deck.length} / 5 枚</span></h3><span class="muted">まずは3枚、最大5枚まで</span></div><div class="deck" id="deck">${Array.from(
+    slots = 5;
+  return `<div class="deck-workspace"><div class="panel casino-deck"><div class="panel-title"><h3>アイデアのデッキ <span class="muted">${t.deck.length} / 5 枚</span></h3></div><div class="deck" id="deck">${Array.from(
     { length: slots },
     (_, i) => {
       const n = t.nodes.find((n) => n.id === t.deck[i]);
-      return `<div class="slot ${n ? 'filled' : ''}" data-slot="${i}">${n ? `<article class="deck-card sticky g${n.group}" data-deck-card="${n.id}" draggable="${editableTeam()}"><span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(editableTeam())}>×</button><p>${esc(n.text)}</p></article>` : '<span>＋</span><span>カードをここへ</span>'}<span class="slot-number">0${i + 1}</span></div>`;
+      return `<div class="slot ${n ? 'filled' : ''}" data-slot="${i}">${n ? `<article class="deck-card sticky g${n.group}" data-deck-card="${n.id}" draggable="${editableTeam()}"><span class="badge">${ws.votes.cards.totals[n.id] || 0}</span><button class="remove" data-remove-deck="${n.id}" aria-label="デッキから外す"${disabled(editableTeam())}>×</button><p>${esc(n.text)}</p></article>` : '<span aria-hidden="true">＋</span>'}<span class="slot-number">0${i + 1}</span></div>`;
     },
   ).join(
     '',
@@ -866,6 +958,32 @@ function selectTopic(id) {
   );
   const actions = $('#topic-actions');
   if (actions) actions.disabled = !editableTeam() || !selected;
+  for (const [selector, direction] of [
+    ['#move-topic-up', -1],
+    ['#move-topic-down', 1],
+  ]) {
+    const button = $(selector);
+    if (button) button.disabled = !editableTeam() || !siblingTarget(id, direction);
+  }
+}
+function siblingTarget(id, direction) {
+  const node = team()?.nodes.find((n) => n.id === id);
+  if (!node) return null;
+  const siblings = team().nodes.filter((n) => (n.parent || 'theme') === (node.parent || 'theme'));
+  return siblings[siblings.findIndex((n) => n.id === id) + direction];
+}
+async function moveTopicVertical(id, direction) {
+  if (!editableTeam() || inlineEdit || editing) return;
+  const target = siblingTarget(id, direction);
+  if (!target) return;
+  selected = id;
+  await action('reorderTopic', {
+    teamId,
+    id,
+    targetId: target.id,
+    position: direction < 0 ? 'before' : 'after',
+  });
+  requestAnimationFrame(() => $(`[data-node="${id}"]`)?.focus({ preventScroll: true }));
 }
 function outlineText(anchorId = selected || 'theme') {
   const t = team(),
@@ -1041,6 +1159,8 @@ function bindMap() {
   $('#undo-map').onclick = guarded(undoMapAction);
   $('#copy-outline').onclick = guarded(copyOutline);
   $('#paste-outline').onclick = pasteOutlineDialog;
+  $('#move-topic-up').onclick = guarded(() => moveTopicVertical(selected, -1));
+  $('#move-topic-down').onclick = guarded(() => moveTopicVertical(selected, 1));
   const zoomTo = (n) => {
     mapFit = false;
     zoom = Math.min(2, Math.max(0.02, n));
@@ -1148,6 +1268,11 @@ function bindMap() {
     };
     button.onkeydown = (e) => {
       if (e.isComposing) return;
+      if (e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        void guarded(() => moveTopicVertical(id, e.key === 'ArrowUp' ? -1 : 1))();
+        return;
+      }
       if (['Enter', 'Insert', 'F2', 'Delete'].includes(e.key)) {
         e.preventDefault();
         if (e.key === 'Delete' && id !== 'theme') deleteMapTopic(id);
@@ -1168,32 +1293,47 @@ function bindMap() {
     };
     button.ondragend = () => {
       mapDragId = null;
-      $$('.map-drop-active,.dragging').forEach((el) =>
-        el.classList.remove('map-drop-active', 'dragging'),
+      $$('.map-drop-active,.map-drop-before,.map-drop-after,.dragging').forEach((el) =>
+        el.classList.remove('map-drop-active', 'map-drop-before', 'map-drop-after', 'dragging'),
       );
     };
   });
   $$('[data-map-target],[data-map-zone]').forEach((target) => {
+    const dropPosition = (e) => {
+      if (!target.dataset.mapTarget || target.dataset.mapTarget === 'theme') return 'child';
+      const rect = target.getBoundingClientRect(),
+        ratio = (e.clientY - rect.top) / Math.max(1, rect.height);
+      return ratio < 0.28 ? 'before' : ratio > 0.72 ? 'after' : 'child';
+    };
     target.ondragover = (e) => {
       if (editableTeam() && mapDragId) {
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = 'move';
-        target.classList.add('map-drop-active');
+        target.classList.remove('map-drop-active', 'map-drop-before', 'map-drop-after');
+        target.classList.add(
+          dropPosition(e) === 'child' ? 'map-drop-active' : `map-drop-${dropPosition(e)}`,
+        );
       }
     };
     target.ondragleave = (e) => {
-      if (!target.contains(e.relatedTarget)) target.classList.remove('map-drop-active');
+      if (!target.contains(e.relatedTarget))
+        target.classList.remove('map-drop-active', 'map-drop-before', 'map-drop-after');
     };
     target.ondrop = guarded(async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      target.classList.remove('map-drop-active');
+      target.classList.remove('map-drop-active', 'map-drop-before', 'map-drop-after');
       const id = e.dataTransfer?.getData('application/x-workshop-node') || mapDragId;
       mapDragId = null;
       if (!editableTeam() || !team().nodes.some((n) => n.id === id)) return;
       if (target.dataset.mapZone === 'delete') return deleteMapTopic(id);
       if (target.dataset.mapTarget === id) return;
+      const position = dropPosition(e);
+      if (!e.shiftKey && target.dataset.mapTarget && position !== 'child') {
+        await action('reorderTopic', { teamId, id, targetId: target.dataset.mapTarget, position });
+        return;
+      }
       await moveMapNode(
         id,
         e.shiftKey ? null : target.dataset.mapTarget || null,
@@ -1215,6 +1355,7 @@ function bindMap() {
     mapObserver.observe($('.map-scroll'));
   }
   document.fonts?.ready.then(() => (mapFit ? fitMap() : updateMapStage()));
+  selectTopic(selected);
 }
 async function moveMapNode(id, parent, standalone = false) {
   if (!editableTeam()) throw Error('他チームは閲覧のみです');
@@ -1283,27 +1424,12 @@ document.addEventListener('keydown', (event) => {
 
 function bindStep() {
   if (tab === 0) bindMap();
-  $$('[data-vote]').forEach(
-    (b) =>
-      (b.onclick = guarded(async () => {
-        b.disabled = true;
-        try {
-          await action('vote', {
-            phase: b.dataset.vote,
-            target: b.dataset.target,
-            delta: Number(b.dataset.delta),
-          });
-        } finally {
-          if (b.isConnected) b.disabled = false;
-        }
-      })),
-  );
-  $$('[data-timer]').forEach(
-    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.timer }))),
-  );
-  $$('[data-stop]').forEach(
-    (b) => (b.onclick = guarded(() => action('timer', { phase: b.dataset.stop, stop: true }))),
-  );
+  bindVoting();
+  if ($('#sort-cards'))
+    $('#sort-cards').onclick = () => {
+      cardSorts.set(adviceKey(), !cardSorts.get(adviceKey()));
+      render();
+    };
   $$('[data-ai]')
     .filter((b) => b.id !== 'map-record')
     .forEach((b) => (b.onclick = guarded(() => runAI(b.dataset.ai))));
@@ -1530,6 +1656,7 @@ function stopRecording() {
 
 function updateClocks() {
   if (!ws) return;
+  refreshVotingUI();
   $$('[data-clock]').forEach((el) => {
     const timer = ws.timers[el.dataset.clock],
       seconds =
@@ -1785,7 +1912,11 @@ async function poll() {
       return;
     }
     const latest = await api(`/api/workshops/${ws.id}`);
-    if (latest.revision !== ws.revision || stateChanged || listChanged) {
+    if (tab === 0 && !stateChanged && !listChanged && mapShape(latest) === mapShape(ws)) {
+      ws = latest;
+      refreshVotingUI();
+      updateClocks();
+    } else if (latest.revision !== ws.revision || stateChanged || listChanged) {
       if (editing) {
         pending = latest;
         showPending();

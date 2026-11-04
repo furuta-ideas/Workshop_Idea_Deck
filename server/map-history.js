@@ -7,6 +7,7 @@ export const mapActions = new Set([
   'pasteOutline',
   'topicTheme',
   'reparent',
+  'reorderTopic',
   'standalone',
   'deleteNode',
   'undoClassification',

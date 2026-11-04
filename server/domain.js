@@ -267,6 +267,40 @@ export function mutate(store, user, wsId, body) {
         if (node) node.group = item.group;
       }
       delete team.lastGrouping;
+    } else if (body.action === 'reorderTopic') {
+      const team = teamFor(ws, user, p.teamId),
+        node = team.nodes.find((n) => n.id === p.id),
+        target = team.nodes.find((n) => n.id === p.targetId);
+      requireThat(
+        node && target && node.id !== target.id,
+        '移動するトピックと挿入先を確認してください',
+      );
+      requireThat(['before', 'after'].includes(p.position), '挿入位置が不正です');
+      node.parent = parentFor(team, node, target.parent);
+      const descendants = (root, nodes) => {
+        const ids = new Set([root]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const n of nodes)
+            if (ids.has(n.parent) && !ids.has(n.id)) {
+              ids.add(n.id);
+              changed = true;
+            }
+        }
+        return ids;
+      };
+      const moving = descendants(node.id, team.nodes);
+      requireThat(!moving.has(target.id), '自分の枝の中へは移動できません');
+      const branch = team.nodes.filter((n) => moving.has(n.id)),
+        rest = team.nodes.filter((n) => !moving.has(n.id)),
+        targetBranch = descendants(target.id, rest);
+      const at =
+        p.position === 'before'
+          ? rest.findIndex((n) => n.id === target.id)
+          : Math.max(...rest.map((n, i) => (targetBranch.has(n.id) ? i : -1))) + 1;
+      rest.splice(at, 0, ...branch);
+      team.nodes = rest;
     } else if (body.action === 'reparent' || body.action === 'standalone') {
       const team = teamFor(ws, user, p.teamId);
       const node = team.nodes.find((n) => n.id === p.id);

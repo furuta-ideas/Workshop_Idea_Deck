@@ -837,13 +837,52 @@ export class NotionContent {
       const nodes = team.nodes.filter((n) =>
         parent === 'theme' ? n.parent === 'theme' || n.parent === null : n.parent === parent,
       );
+      // Notion cannot reposition an existing block through append. Keep the
+      // largest in-order branches and copy only the branches that must move.
+      const siblings =
+        this.all(state.doc).find((b) => b.id === blockParent)?.children ||
+        state.doc.sections[1].roots;
+      const candidates = nodes
+        .map((n) => {
+          const original = byBlock.get(oldById.get(n.id)?.notionBlockId);
+          return {
+            id: n.id,
+            at: siblings.findIndex((b) => b.id === original?.id),
+            weight: original ? this.descendantBlocks(original).length + 1 : 0,
+            original,
+          };
+        })
+        .filter(
+          (n) =>
+            !recreate &&
+            n.at >= 0 &&
+            n.original.parentId === blockParent &&
+            n.original.type === 'toggle',
+        );
+      const scores = [],
+        paths = [];
+      for (let i = 0; i < candidates.length; i++) {
+        let best = -1;
+        for (let j = 0; j < i; j++)
+          if (candidates[j].at < candidates[i].at && (best < 0 || scores[j] > scores[best]))
+            best = j;
+        scores[i] = candidates[i].weight + (best < 0 ? 0 : scores[best]);
+        paths[i] = [...(best < 0 ? [] : paths[best]), candidates[i].id];
+      }
+      const keepOrder = new Set(scores.length ? paths[scores.indexOf(Math.max(...scores))] : []);
       let previous = blockParent === ws.notion.pageId ? state.doc.sections[1].id : null;
       for (const n of nodes) {
         const old = oldById.get(n.id),
           original = old && byBlock.get(old.notionBlockId);
         let b = original;
         const changedParent = original && original.parentId !== blockParent;
-        if (!original || recreate || changedParent || original.type !== 'toggle') {
+        if (
+          !original ||
+          recreate ||
+          changedParent ||
+          original.type !== 'toggle' ||
+          !keepOrder.has(n.id)
+        ) {
           if (original) checkSafe(original);
           b = await this.append(
             ws,

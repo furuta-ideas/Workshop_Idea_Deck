@@ -2712,3 +2712,175 @@ dialog .close {
     padding: 5px;
   }
 }
+
+/* Board voting and sibling insertion: compact controls, stable map nodes. */
+.compact-voting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.compact-voting .toolbar-icon svg {
+  width: 21px;
+  height: 21px;
+}
+.compact-voting .voting-active {
+  background: #e3ad32;
+  color: #3a2a05;
+  border-radius: 7px;
+}
+.vote-budget,
+.vote-clock {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+}
+.topic-votes {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.topic-votes:empty,
+.card-vote-controls:empty {
+  display: none;
+}
+.map-voting-active .topic-votes:not(:empty) {
+  width: 88px;
+  min-height: 23px;
+  justify-content: flex-end;
+}
+.topic-votes button,
+.card-vote-controls button {
+  padding: 0;
+  width: 23px;
+  height: 23px;
+  min-width: 23px;
+  line-height: 1;
+  font-size: 17px;
+  border: 1px solid #8daa9b;
+  background: #fffdf4;
+  color: #164e3a;
+  border-radius: 50%;
+}
+.topic-votes .vote-minus,
+.card-vote-controls .vote-minus {
+  border-color: #c69b31;
+  background: #fff0bc;
+  color: #765006;
+}
+.topic-total {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 50%;
+  color: #4b3509;
+  background: #f0cf70;
+  font-size: 11px;
+  font-weight: 700;
+}
+.map-drop-before,
+.map-drop-after {
+  position: relative;
+}
+.map-drop-before::before,
+.map-drop-after::after {
+  content: '';
+  position: absolute;
+  left: -6px;
+  right: -8px;
+  height: 4px;
+  background: #008a76;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px #e1fff3;
+  pointer-events: none;
+}
+.map-drop-before::before {
+  top: -7px;
+}
+.map-drop-after::after {
+  bottom: -7px;
+}
+.narrowed-cards > .panel-title > .row {
+  margin-left: auto;
+  gap: 10px;
+}
+#sort-cards[aria-pressed='true'] {
+  color: #007e69;
+  background: #e4f0e9;
+}
+#sort-cards svg {
+  width: 21px;
+  height: 21px;
+}
+.card-vote-controls {
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* Five casino-style card positions, with shortlisted cards below the table. */
+.deck-workspace {
+  grid-template-columns: minmax(0, 1fr);
+}
+.casino-deck {
+  border: 2px solid #a18a40;
+  overflow: hidden;
+}
+.casino-deck > .panel-title {
+  background: linear-gradient(110deg, #766027, #b5a052);
+  border-bottom: 2px solid #d8bf70;
+  color: #fff7da;
+}
+.casino-deck > .panel-title .muted {
+  color: #fff1bb;
+}
+.casino-deck .deck {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 20px;
+  padding: 30px 24px;
+  background: radial-gradient(ellipse at 50% 15%, #087d40 0%, #034a28 55%, #012715 100%);
+  box-shadow: inset 0 0 55px #001a12c0;
+}
+.casino-deck .slot {
+  min-height: 206px;
+  border: 3px solid #f4e4a5;
+  border-radius: 27px;
+  background: #063c2220;
+  box-shadow:
+    inset 0 0 14px #001c1820,
+    0 0 0 1px #b39a4a;
+  padding: 16px 12px 22px;
+  color: #ffefb4;
+}
+.casino-deck .slot.filled {
+  background: #063c2220;
+}
+.casino-deck .slot .slot-number {
+  color: #f4e4a5b0;
+}
+.casino-deck .slot.dragover {
+  outline: 3px solid #f9d557;
+  outline-offset: 4px;
+  background: #d2c06a35;
+}
+.casino-deck .deck-card {
+  min-height: 162px;
+  transform: rotate(-1deg);
+}
+.deck-workspace .narrowed-cards .sticky-grid {
+  max-height: 300px;
+  grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+}
+@media (max-width: 800px) {
+  .casino-deck .deck {
+    display: flex;
+    gap: 14px;
+    padding: 22px 16px;
+    overflow-x: auto;
+  }
+  .casino-deck .slot {
+    flex: 0 0 150px;
+    min-width: 150px;
+  }
+}

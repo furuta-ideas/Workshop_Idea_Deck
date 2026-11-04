@@ -222,6 +222,62 @@ test('Notion本文: MindManager貼付けを一括予約し、Notionのトグル�
   );
 });
 
+test('Notion上下移動: トグルの兄弟順と子孫・論理ID・票を保ち、再送と新規取込みでも復元', async (t) => {
+  const f = fixture(t);
+  await f.load();
+  let w = await queue(
+    f,
+    'pasteOutline',
+    { teamId: f.team.id, anchorId: 'theme', placement: 'child', text: 'A\n\tA子\nB\n\tB子\nC' },
+    1000,
+  );
+  w = await f.n.content.flushScheduled(w.id, 11001);
+  const byText = (text) => w.teams[f.team.id].nodes.find((n) => n.text === text),
+    a = byText('A'),
+    b = byText('B'),
+    c = byText('C');
+  const originalB = b.notionBlockId;
+  w.votes.cards['admin@example.test'] = { [c.id]: 2 };
+  w.teams[f.team.id].deck = [c.id];
+  f.store.put('workshops', w.id, w);
+  w = await queue(
+    f,
+    'reorderTopic',
+    { teamId: f.team.id, id: c.id, targetId: a.id, position: 'before' },
+    12000,
+  );
+  const expected = w.teams[f.team.id].nodes.map(({ id, text, parent }) => ({ id, text, parent }));
+  f.state.loseAppend = true;
+  w = await f.n.content.flushScheduled(w.id, 22001);
+  assert.ok(w.documentSync.error);
+  await f.n.content.requestRetry(w.id, 23000);
+  w = await f.n.content.flushScheduled(w.id, 23001);
+  assert.equal(w.documentSync.error, null);
+  assert.deepEqual(
+    f
+      .find('team-a')
+      .children.filter((n) => !n.archived)
+      .map(text),
+    ['メイン', 'C', 'A', 'B'],
+  );
+  assert.equal(w.teams[f.team.id].nodes.find((n) => n.id === b.id).notionBlockId, originalB);
+  assert.equal(
+    (await f.n.content.read(w)).sections[1].roots
+      .find((n) => n.id === 'team-a')
+      .children.filter((n) => text(n) === 'C').length,
+    1,
+  );
+  const imported = structuredClone(w);
+  imported.teams[f.team.id].nodes = [];
+  f.store.put('workshops', w.id, imported);
+  f.store.del('kv', `notion-content:${w.id}`);
+  w = await f.load();
+  assert.deepEqual(
+    w.teams[f.team.id].nodes.map(({ id, text, parent }) => ({ id, text, parent })),
+    expected,
+  );
+});
+
 test('Notion取消: 10秒待機中の枝削除を戻すと子孫を保持し、Notionへ削除を送らない', async (t) => {
   const f = fixture(t),
     original = await f.load();

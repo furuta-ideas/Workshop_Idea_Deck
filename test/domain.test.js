@@ -332,6 +332,60 @@ test('マップ取消: 親削除は全子孫・関連票・デッキをまとめ
   assert.equal(JSON.stringify(view(result, f.editor)).includes('map-undo:'), false);
 });
 
+test('マップ上下移動: 子孫を枝ごと前後へ移し、Undoで順序を戻して循環・越境を拒否', (t) => {
+  const f = setup(t),
+    w = f.store.get('workshops', f.ws.id),
+    team = w.teams[f.team.id];
+  team.nodes = [
+    { id: 'a', text: 'A', parent: 'theme', group: 0 },
+    { id: 'ac', text: 'A子', parent: 'a', group: 0 },
+    { id: 'b', text: 'B', parent: 'theme', group: 1 },
+    { id: 'bc', text: 'B子', parent: 'b', group: 1 },
+    { id: 'c', text: 'C', parent: 'theme', group: 2 },
+  ];
+  f.store.put('workshops', w.id, w);
+  let result = f.act(f.editor, 'reorderTopic', {
+    teamId: team.id,
+    id: 'a',
+    targetId: 'b',
+    position: 'after',
+  });
+  assert.deepEqual(
+    result.teams[team.id].nodes.map((n) => n.id),
+    ['b', 'bc', 'a', 'ac', 'c'],
+  );
+  result = f.act(f.editor, 'undoMap', { teamId: team.id });
+  assert.deepEqual(result.teams[team.id].nodes, team.nodes);
+  assert.throws(() =>
+    f.act(f.editor, 'reorderTopic', {
+      teamId: team.id,
+      id: 'a',
+      targetId: 'ac',
+      position: 'before',
+    }),
+  );
+  assert.throws(
+    () =>
+      f.act(f.viewer, 'reorderTopic', {
+        teamId: team.id,
+        id: 'c',
+        targetId: 'a',
+        position: 'before',
+      }),
+    (e) => e.status === 403,
+  );
+  result = f.act(f.editor, 'reorderTopic', {
+    teamId: team.id,
+    id: 'c',
+    targetId: 'a',
+    position: 'before',
+  });
+  assert.deepEqual(
+    result.teams[team.id].nodes.map((n) => n.id),
+    ['c', 'a', 'ac', 'b', 'bc'],
+  );
+});
+
 test('マップ取消: 追加・文字・色・移動・中心名・貼付け・単独化を順に取り消せる', (t) => {
   const f = setup(t),
     teamId = f.team.id,
