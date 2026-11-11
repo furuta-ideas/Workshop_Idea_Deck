@@ -4230,3 +4230,32 @@ dialog.qr-modal {
 .map-panel .vote-bar .clock {
   font-size: 22px;
 }
+
+.workshop-item {
+  position: relative;
+  display: grid;
+}
+.workshop-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line, #d0d5dd);
+  background: rgba(255, 255, 255, 0.92);
+  color: #b42318;
+  cursor: pointer;
+}
+.workshop-delete svg {
+  width: 18px;
+  height: 18px;
+}
+.workshop-delete:hover,
+.workshop-delete:focus-visible {
+  background: #fee4e2;
+}

@@ -356,9 +356,10 @@ function workshopList() {
   app.innerHTML = `<main class="opening"><section class="workshop-list"><header class="list-head"><div><h1>${me.admin ? '新しいワークショップを始める' : 'ワークショップに参加する'}</h1><p class="muted">${esc(me.email)}${me.demo ? '（ローカル体験モード）' : ''}</p></div>${me.admin ? '<button id="new-workshop" class="primary">＋ 作成</button>' : ''}</header><h2>ワークショップを再開する</h2>${
     workshops.length
       ? `<div class="workshop-grid">${workshops
+          .filter((w) => !w.deleted)
           .map(
             (w) =>
-              `<button class="workshop-card${w.deleted ? ' deleted' : ''}" data-open-workshop="${esc(w.id)}" title="${esc(w.name)}"><span class="workshop-thumb" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i>${w.deleted ? '' : `<img data-thumb alt="" loading="lazy" src="/api/workshops/${encodeURIComponent(w.id)}/thumb?t=${Math.floor(Date.now() / 60000)}">`}</span><strong>${esc(w.name)}</strong><small>${esc([w.deleted ? '削除済み' : w.status, w.role, w.endDate ? '期限 ' + w.endDate : ''].filter(Boolean).join(' · '))}</small></button>`,
+              `<div class="workshop-item">${me.admin ? `<button class="workshop-delete" data-delete-workshop="${esc(w.id)}" data-name="${esc(w.name)}" aria-label="${esc(w.name)}を一覧から削除" title="一覧から削除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : ''}<button class="workshop-card${w.deleted ? ' deleted' : ''}" data-open-workshop="${esc(w.id)}" title="${esc(w.name)}"><span class="workshop-thumb" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i>${w.deleted ? '' : `<img data-thumb alt="" loading="lazy" src="/api/workshops/${encodeURIComponent(w.id)}/thumb?t=${Math.floor(Date.now() / 60000)}">`}</span><strong>${esc(w.name)}</strong><small>${esc([w.deleted ? '削除済み' : w.status, w.role, w.endDate ? '期限 ' + w.endDate : ''].filter(Boolean).join(' · '))}</small></button></div>`,
           )
           .join('')}</div>`
       : `<div class="empty"><strong>${state[0]}</strong>${state[1]}<br>一覧と権限は自動で再確認します。</div>`
@@ -368,6 +369,24 @@ function workshopList() {
   $$('[data-thumb]').forEach((img) => img.addEventListener('error', () => img.remove()));
   $$('[data-open-workshop]').forEach(
     (b) => (b.onclick = guarded(() => loadWorkshop(b.dataset.openWorkshop))),
+  );
+  $$('[data-delete-workshop]').forEach(
+    (b) =>
+      (b.onclick = guarded(async () => {
+        if (
+          !confirm(
+            `「${b.dataset.name}」を一覧から削除し、参加者の閲覧を停止しますか？管理者の記録は残ります。`,
+          )
+        )
+          return;
+        const target = await api(`/api/workshops/${b.dataset.deleteWorkshop}`);
+        await api(`/api/workshops/${target.id}/meta`, {
+          revision: target.revision,
+          deleted: true,
+        });
+        workshops = await api('/api/workshops');
+        render();
+      })),
   );
 }
 function render() {
