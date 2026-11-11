@@ -49,6 +49,8 @@ export function preserveLocalContent(incoming, latest) {
     'votes',
     'budgets',
     'durations',
+    'textScale',
+    'character',
     'timers',
     'notionVoteBaseline',
     'documentSync',

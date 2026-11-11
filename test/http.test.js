@@ -109,7 +109,7 @@ test('HTTP: 作成応答の消失は保存したWSに明示し、テンプレー
   assert.equal(calls, 1);
 });
 
-test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちでも連続編集できる', async (t) => {
+test('HTTP: マップ操作はNotion通信も記録予約もせず保存し、連続編集できる', async (t) => {
   const f = await setup(t),
     admin = await f.login('admin@example.test'),
     ws = newWorkshop('待機同期', 'admin@example.test'),
@@ -135,7 +135,7 @@ test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちで�
       admin,
     );
     assert.equal(response.status, 200);
-    assert.equal(response.body.documentSync.queued, true);
+    assert.equal(!!response.body.documentSync?.queued, false); // v0.14: recorded on save
     current = response.body;
   }
   assert.equal(current.teams[team.id].nodes.length, 2);
@@ -158,7 +158,6 @@ test('HTTP: マップ操作はNotion通信をせず保存し、同期待ちで�
   );
   assert.equal(response.status, 200);
   assert.equal(response.body.teams[team.id].nodes.length, 4);
-  assert.equal(response.body.documentSync.generation, 3);
   assert.equal(externalCalls, 0);
 });
 
@@ -222,7 +221,6 @@ test('HTTP: Notionの読取り・送信が進行中でも編集と活動通知�
     );
     assert.equal(response.status, 200);
     assert.equal(response.body.documentSync.syncing, true);
-    assert.equal(response.body.documentSync.generation, 2);
     assert.equal(response.body.teams[team.id].nodes[0].text, '同期完了を待たず保存');
     assert.equal(
       (await f.req(`/api/workshops/${w.id}/content-activity`, { teamId: team.id }, admin)).status,
@@ -284,6 +282,7 @@ test('HTTP: mdは管理者だけ編集可能。全チーム閲覧と越境変更
   assert.equal((await f.req('/api/facilitator/export', undefined, admin)).status, 200);
   const read = await f.req(`/api/workshops/${ws.id}`, undefined, editor);
   assert.equal(read.body.teams[other.id].nodes[0].text, 'B班の気づき');
+  // v0.19: any team may be edited; only a team that does not exist is refused.
   for (const session of [admin, editor]) {
     assert.equal(
       (
@@ -291,29 +290,29 @@ test('HTTP: mdは管理者だけ編集可能。全チーム閲覧と越境変更
           `/api/workshops/${ws.id}/action`,
           {
             action: 'node',
-            payload: { teamId: other.id, text: '越境' },
+            payload: { teamId: 'missing-team', text: '存在しない班' },
             revision: ws.revision,
             requestId: id(),
           },
           session,
         )
       ).status,
-      403,
+      404,
     );
     assert.equal(
       (
         await f.req(
           `/api/workshops/${ws.id}/advice`,
-          { teamId: other.id, phase: 'ideation', event: 'help_requested' },
+          { teamId: 'missing-team', phase: 'ideation', event: 'help_requested' },
           session,
         )
       ).status,
-      403,
+      404,
     );
     assert.equal(
-      (await f.req(`/api/workshops/${ws.id}/ai`, { teamId: other.id, task: 'questions' }, session))
+      (await f.req(`/api/workshops/${ws.id}/ai`, { teamId: 'missing-team', task: 'questions' }, session))
         .status,
-      403,
+      404,
     );
   }
   const proposal = id();
@@ -589,6 +588,10 @@ test('HTTP: AI提案は確認前に変更せず、16:9画像の適用・④投�
   );
   assert.equal(applied.status, 200);
   assert.equal(applied.body.teams[teamId].image.width, 16);
+  // The image is saved with the current deck, which ④ lists as its own entry.
+  assert.equal(applied.body.teams[teamId].ideas.length, 1);
+  assert.equal(applied.body.teams[teamId].activeIdeaId, applied.body.teams[teamId].ideas[0].id);
+  assert.ok(applied.body.teams[teamId].ideas[0].image.key);
   const timer = await f.req(
     `/api/workshops/${ws.id}/action`,
     {
@@ -724,4 +727,218 @@ test('HTTP: Notion障害中も登録済み利用者のOTP認証は可能だが�
   const me = await f.req('/api/me', undefined, session);
   assert.equal(me.status, 200);
   assert.equal(me.body.notion.state, 'error');
+});
+
+test('HTTP: 画像生成中に別の編集があっても結果を捨てず、JPEGはブラウザーで変換したPNGで適用する', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test');
+  const ws = (await f.req('/api/workshops', { name: '画像生成の競合テスト' }, admin)).body,
+    teamId = Object.keys(ws.teams)[0];
+  f.app.ai.config.providers = [
+    {
+      id: 'genspark-enterprise',
+      label: 'test-only',
+      endpoint: 'https://fixture.example.test',
+      keyEnv: 'TEST_GATEWAY_KEY',
+      approvalReference: 'test-only',
+      capabilities: ['image'],
+    },
+  ];
+  process.env.TEST_GATEWAY_KEY = 'test-only';
+  t.after(() => delete process.env.TEST_GATEWAY_KEY);
+  let result = { pngBase64: testPNG() };
+  f.app.ai.transport = async () => {
+    // Someone edits the map while the image is being generated.
+    const current = f.app.store.get('workshops', ws.id);
+    current.revision++;
+    f.app.store.put('workshops', ws.id, current);
+    return { ok: true, text: async () => JSON.stringify(result) };
+  };
+  const proposal = await f.req(`/api/workshops/${ws.id}/ai`, { task: 'image', teamId }, admin);
+  assert.equal(proposal.status, 200);
+  const latest = await f.req(`/api/workshops/${ws.id}`, undefined, admin);
+  await f.req(
+    `/api/workshops/${ws.id}/action`,
+    {
+      action: 'createTopic',
+      payload: { teamId, text: '確認中の編集', placement: 'child', anchorId: 'theme' },
+      revision: latest.body.revision,
+      requestId: id(),
+    },
+    admin,
+  );
+  const applied = await f.req(`/api/workshops/${ws.id}/apply`, { proposal: proposal.body.proposal }, admin);
+  assert.equal(applied.status, 200);
+  assert.ok(applied.body.teams[teamId].image);
+  result = { imageBase64: '/9j/4AAQ', mime: 'image/jpeg' };
+  const jpeg = await f.req(`/api/workshops/${ws.id}/ai`, { task: 'image', teamId }, admin);
+  assert.equal(jpeg.status, 200);
+  assert.equal(
+    (await f.req(`/api/workshops/${ws.id}/apply`, { proposal: jpeg.body.proposal }, admin)).status,
+    400,
+  );
+  const converted = await f.req(
+    `/api/workshops/${ws.id}/apply`,
+    { proposal: jpeg.body.proposal, pngBase64: testPNG() },
+    admin,
+  );
+  assert.equal(converted.status, 200);
+});
+
+test('HTTP: OTPでログインした同じブラウザー・同じメールは24時間OTPなしで入れ、別メールや期限切れは再びOTP', async (t) => {
+  const f = await setup(t);
+  f.app.store.put('users', 'editor@example.test', { id: id(), email: 'editor@example.test', admin: false, passkeys: [] });
+  const s = await f.req('/api/auth/start', { email: 'admin@example.test' });
+  const login = await f.req('/api/auth/verify', { challenge: s.body.challenge, code: f.codes.get('admin@example.test') });
+  const cookies = login.headers.getSetCookie();
+  const trust = cookies.find((c) => c.startsWith('wid_trust=')).split(';')[0];
+  assert.match(cookies.find((c) => c.startsWith('wid_session=')), /Max-Age=86(400|39d)/);
+  // After logging out, the same email on the same browser logs in without a code.
+  f.codes.clear();
+  const again = await f.req('/api/auth/start', { email: 'admin@example.test' }, { cookie: trust });
+  assert.equal(again.status, 200);
+  assert.equal(again.body.trusted, true);
+  assert.equal(f.codes.size, 0);
+  const session = { cookie: again.cookie, csrf: again.body.csrf };
+  assert.equal((await f.req('/api/me', undefined, session)).body.email, 'admin@example.test');
+  // Another email, no pass, or an expired pass need a code.
+  for (const [email, cookie] of [['editor@example.test', trust], ['admin@example.test', undefined]]) {
+    const r = await f.req('/api/auth/start', { email }, { cookie });
+    assert.equal(r.body.trusted, undefined);
+    assert.ok(r.body.challenge);
+  }
+  for (const row of f.app.store.db.prepare('SELECT id FROM challenges').all()) {
+    const c = f.app.store.get('challenges', row.id);
+    if (c?.type === 'otp-trust') f.app.store.put('challenges', row.id, { ...c, expires: Date.now() - 1 });
+  }
+  const expired = await f.req('/api/auth/start', { email: 'admin@example.test' }, { cookie: trust });
+  assert.equal(expired.body.trusted, undefined);
+  assert.ok(expired.body.challenge);
+});
+
+test('HTTP: QR参加はOTPが通ったメールを編集者として自動登録し、どの班でも編集できる。音声ログは満杯で古い部分を要約に圧縮', async (t) => {
+  const f = await setup(t),
+    admin = await f.login('admin@example.test');
+  let ws = (await f.req('/api/workshops', { name: 'QR参加テスト' }, admin)).body;
+  ws = (
+    await f.req(
+      `/api/workshops/${ws.id}/action`,
+      { action: 'addTeam', payload: { name: 'B班' }, revision: ws.revision, requestId: id() },
+      admin,
+    )
+  ).body;
+  const [teamA, teamB] = Object.keys(ws.teams);
+  const qr = await f.req(`/api/workshops/${ws.id}/qr-data`, undefined, admin);
+  assert.equal(qr.body.url, `http://localhost:4317/?join=${ws.id}`);
+  // An SVG drawn from the code's squares: no PNG encoder (it fails on Cloudflare Workers).
+  assert.match(qr.body.dataUrl, /^data:image\/svg\+xml;base64,/);
+  const svg = Buffer.from(qr.body.dataUrl.split(',')[1], 'base64').toString();
+  assert.match(svg, /^<svg [^>]*viewBox="0 0 \d+ \d+"/);
+  assert.ok((svg.match(/h1v1h-1z/g) || []).length > 200);
+  // The list picture: nothing for an empty workshop, then its mind map, then a generated image.
+  assert.equal((await f.req(`/api/workshops/${ws.id}/thumb`, undefined, admin)).status, 404);
+  {
+    const w = f.app.store.get('workshops', ws.id);
+    w.teams[teamA].nodes.push(
+      { id: 't1', text: '駅前の<人手>不足', parent: 'theme', group: 1 },
+      { id: 't2', text: '夜間の見守り', parent: 't1', group: 0 },
+    );
+    f.app.store.put('workshops', ws.id, w);
+    const map = await f.req(`/api/workshops/${ws.id}/thumb`, undefined, admin);
+    assert.ok(map.headers.get('content-type').startsWith('image/svg+xml'));
+    assert.ok(map.body.startsWith('<svg ') && map.body.includes('viewBox="0 0 400 400"'));
+    assert.match(map.body, /駅前の&lt;人手&gt;不足/);
+    assert.match(map.body, /夜間の見守り/);
+    assert.equal((await f.req(`/api/workshops/${ws.id}/thumb`)).status, 401);
+    w.teams[teamA].nodes = [];
+    f.app.store.put('workshops', ws.id, w);
+  }
+  // An address nobody registered: the code alone makes it an editor, logged in at once.
+  const email = 'guest@example.test';
+  const start = await f.req('/api/join/start', { email, workshopId: ws.id });
+  assert.equal(start.status, 200);
+  assert.equal(
+    (await f.req('/api/join/verify', { challenge: start.body.challenge, code: '000000' })).status,
+    401,
+  );
+  const verify = await f.req('/api/join/verify', {
+    challenge: start.body.challenge,
+    code: f.codes.get(email),
+  });
+  assert.equal(verify.status, 200);
+  assert.equal(verify.body.status, 'approved');
+  assert.equal(verify.body.workshopId, ws.id);
+  const cookies = verify.headers.getSetCookie();
+  assert.ok(cookies.some((c) => c.startsWith('wid_trust=')));
+  const guest = {
+    cookie: cookies.find((c) => c.startsWith('wid_session=')).split(';')[0],
+    csrf: verify.body.csrf,
+  };
+  const stored = f.app.store.get('workshops', ws.id);
+  assert.deepEqual(stored.members[email], { role: '編集者', teamId: null });
+  assert.equal((await f.req('/api/me', undefined, guest)).body.admin, false);
+  const seen = await f.req(`/api/workshops/${ws.id}`, undefined, guest);
+  assert.equal(seen.body.role, '編集者');
+  // No team assignment: the new editor writes in both teams.
+  let revision = seen.body.revision;
+  for (const teamId of [teamA, teamB]) {
+    const r = await f.req(
+      `/api/workshops/${ws.id}/action`,
+      { action: 'node', payload: { teamId, text: 'どの班でも書ける' }, revision, requestId: id() },
+      guest,
+    );
+    assert.equal(r.status, 200);
+    revision = r.body.revision;
+  }
+  // Joining again keeps the role the admin gave meanwhile.
+  const latest = f.app.store.get('workshops', ws.id);
+  latest.members[email].role = '閲覧者';
+  f.app.store.put('workshops', ws.id, latest);
+  const again = await f.req('/api/join/start', { email, workshopId: ws.id });
+  await f.req('/api/join/verify', { challenge: again.body.challenge, code: f.codes.get(email) });
+  assert.equal(f.app.store.get('workshops', ws.id).members[email].role, '閲覧者');
+  // A finished workshop takes no new participants.
+  const closed = f.app.store.get('workshops', ws.id);
+  closed.members[email].role = '編集者';
+  f.app.store.put('workshops', ws.id, closed);
+  // ① voice log from the browser's speech recognition: appended without any AI call.
+  const asked = [];
+  f.app.ai.run = async (task, input) => {
+    asked.push({ task, mode: input.mode, length: input.transcript.length });
+    return { text: '・駅前は夜に人手が足りない\n・見守りを自動にしたい' };
+  };
+  const session = await f.login('admin@example.test');
+  const add = (text) => f.req(`/api/workshops/${ws.id}/transcript`, { teamId: teamA, text }, session);
+  const first = await add('最初の発言。');
+  assert.equal(first.status, 200);
+  assert.equal(first.body.teams[teamA].discussion.transcript, '最初の発言。');
+  assert.equal((await add('次の発言。')).body.teams[teamA].discussion.transcript, '最初の発言。\n次の発言。');
+  assert.equal(asked.length, 0);
+  assert.equal((await add('')).status, 400);
+  assert.equal((await f.req(`/api/workshops/${ws.id}/transcript`, { teamId: teamA, text: 'x' }, {})).status, 401);
+  // Full (100,000 characters): the older part becomes a summary, the latest 60,000 stay.
+  const full = f.app.store.get('workshops', ws.id);
+  full.teams[teamA].discussion.transcript = 'あ'.repeat(99998);
+  f.app.store.put('workshops', ws.id, full);
+  const packed = (await add('最後の発言です。')).body.teams[teamA].discussion.transcript;
+  assert.deepEqual(asked.map((a) => [a.task, a.mode]), [['summarize', 'compact']]);
+  assert.ok(asked[0].length > 39000);
+  assert.match(packed, /^【ここまでの議論の要約】\n・駅前は夜に人手が足りない/);
+  assert.match(packed, /【続きの記録】\nあ+\n最後の発言です。$/);
+  assert.ok([...packed].length < 61000);
+  // If the summary fails, recording still goes on: the oldest part is dropped.
+  f.app.ai.run = async () => {
+    throw Error('AI down');
+  };
+  const again2 = f.app.store.get('workshops', ws.id);
+  again2.teams[teamA].discussion.transcript = 'い'.repeat(99998);
+  f.app.store.put('workshops', ws.id, again2);
+  const dropped = (await add('止まらない。')).body.teams[teamA].discussion.transcript;
+  assert.equal([...dropped].length, 60000);
+  assert.match(dropped, /止まらない。$/);
+  // A workshop that is over takes no new participants.
+  const over = f.app.store.get('workshops', ws.id);
+  over.status = '完了';
+  f.app.store.put('workshops', ws.id, over);
+  assert.equal((await f.req('/api/join/start', { email: 'late@example.test', workshopId: ws.id })).status, 403);
 });

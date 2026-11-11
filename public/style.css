@@ -2961,6 +2961,256 @@ dialog .close {
   max-width: 100%;
   height: auto;
 }
+.mascot-duo {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0;
+}
+.mascot-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 82px;
+  height: 78px;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 90%;
+}
+.mascot-avatar img {
+  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 3px 2px #092e2522);
+}
+.mascot-duo .mascot-avatar {
+  width: 66px;
+  height: 66px;
+}
+.mascot-idle {
+  animation: mascot-breathe 4s ease-in-out infinite;
+}
+.mascot-thinking {
+  animation: mascot-think 1.8s ease-in-out infinite;
+}
+.mascot-speaking {
+  animation: mascot-talk 0.8s ease-in-out 4;
+}
+.mascot-insight {
+  animation: mascot-hop 0.9s ease-out 2;
+}
+.mascot-avatar:hover {
+  animation: mascot-wave 0.6s ease-in-out 2;
+}
+.mascot-small {
+  width: 48px;
+  height: 54px;
+}
+.advice-robot {
+  min-width: 134px;
+}
+.ai-advice {
+  grid-template-columns: 134px minmax(0, 1fr);
+}
+.character-chat {
+  text-align: left;
+}
+.chat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-right: 20px;
+}
+.chat-heading h2 {
+  margin: 5px 0 8px;
+}
+.chat-heading .eyebrow {
+  color: #267454;
+}
+.chat-context {
+  color: #527267;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 5px 0 8px;
+}
+.character-picker {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  margin: 8px 0;
+}
+.character-picker button {
+  display: flex;
+  align-items: center;
+  background: #f8fbf4;
+  border: 2px solid transparent;
+  border-radius: 18px;
+  padding: 0 15px 0 4px;
+}
+.character-picker button.active {
+  border-color: #218b68;
+  background: #eaf5e6;
+}
+.character-picker button[data-chat-character='leafy'].active {
+  border-color: #d88189;
+  background: #fff1f1;
+}
+.chat-log {
+  min-height: 150px;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #d5e5dc;
+  border-radius: 14px;
+  background: #f5f9f1;
+  scroll-behavior: smooth;
+}
+.chat-welcome {
+  text-align: center;
+  padding: 24px 8px;
+  color: #537364;
+}
+.chat-message {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+  align-items: flex-start;
+}
+.chat-message > div {
+  max-width: 88%;
+  background: white;
+  border: 1px solid #d2e5d7;
+  border-radius: 3px 16px 16px;
+  padding: 10px 14px;
+}
+.chat-message p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.85;
+}
+.chat-message small {
+  color: #548169;
+}
+.chat-user {
+  justify-content: flex-end;
+}
+.chat-user > div {
+  background: #e0f2e7;
+  border-radius: 16px 3px 16px 16px;
+}
+.chat-thinking {
+  color: #497b59;
+  padding: 10px;
+}
+#advice-chat-form {
+  margin-top: 12px;
+}
+#advice-chat-form label {
+  display: block;
+  margin-bottom: 5px;
+}
+#advice-chat-form .row {
+  margin-top: 8px;
+}
+.genspark-browser-login {
+  margin: 15px 0;
+  padding: 16px;
+  background: #edf7f0;
+  border: 1px solid #c7e2cd;
+  border-radius: 12px;
+}
+.genspark-browser-login p {
+  line-height: 1.8;
+  font-size: 13px;
+}
+.recording-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 12px;
+  color: #176950;
+}
+.recording-status label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.recording-status meter {
+  width: 100px;
+}
+@keyframes mascot-breathe {
+  50% {
+    transform: translateY(-2px) rotate(1deg);
+  }
+}
+@keyframes mascot-think {
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+  50% {
+    transform: rotate(5deg) translateY(-3px);
+  }
+}
+@keyframes mascot-talk {
+  30% {
+    transform: translateY(-4px) rotate(-3deg);
+  }
+  65% {
+    transform: rotate(3deg);
+  }
+}
+@keyframes mascot-hop {
+  35% {
+    transform: translateY(-9px) rotate(5deg);
+  }
+  70% {
+    transform: translateY(1px) scaleY(0.96);
+  }
+}
+@keyframes mascot-wave {
+  25% {
+    transform: rotate(-8deg);
+  }
+  75% {
+    transform: rotate(8deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mascot-avatar,
+  .mascot-avatar:hover {
+    animation: none;
+  }
+  .chat-log {
+    scroll-behavior: auto;
+  }
+}
+@media (max-width: 650px) {
+  .character-picker button {
+    padding-right: 8px;
+    font-size: 12px;
+  }
+  .character-picker .mascot-avatar {
+    width: 65px;
+    height: 65px;
+  }
+  .chat-heading {
+    display: block;
+  }
+  .chat-log {
+    max-height: 30vh;
+  }
+  .advice-robot {
+    min-width: 112px;
+  }
+  .mascot-duo .mascot-avatar {
+    width: 54px;
+    height: 58px;
+  }
+}
 @media (max-width: 900px) {
   .deck-discussion .discussion-editor {
     grid-template-columns: 1fr;
@@ -2977,4 +3227,1006 @@ dialog .close {
     flex: 0 0 150px;
     min-width: 150px;
   }
+}
+
+/* Assistant chat: quick actions and adoptable candidates (v0.13) */
+.quick-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--green);
+  padding: 4px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.chip:hover:not(:disabled) {
+  background: var(--mint);
+}
+.chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.chat-options {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.chat-options li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: #fbfdfb;
+}
+.chat-options small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+.option-field {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.option-value {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.chat-groups {
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+@media (max-width: 600px) {
+  .chat-options li {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Map stability (v0.14.1): fixed-width zoom label and a reserved scrollbar gutter so
+   zooming never changes the toolbar wrap or the map width. */
+#zoom-label {
+  display: inline-block;
+  min-width: 3.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.map-panel .map-scroll {
+  scrollbar-gutter: stable;
+}
+.compact-voting {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keep every step inside the window (v0.14.1): no single long word, URL or wide
+   child may widen the page; long text wraps instead. */
+.tabbar {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+}
+.topbar > * {
+  min-width: 0;
+}
+.main,
+.main > *,
+#step-content > *,
+.deck-workspace > *,
+.deck-discussion,
+.deck-discussion .discussion-editor > *,
+.ai-advice > * {
+  min-width: 0;
+  max-width: 100%;
+}
+#step-content,
+.ai-advice,
+.notice,
+.warning,
+.sticky,
+.deck-card,
+.summary-preview {
+  overflow-wrap: anywhere;
+}
+#step-content img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ③ text size, set per workshop in 管理者設定 → 表示の設定 (v0.14.1). */
+.deck-discussion {
+  --text-scale: 1.15;
+}
+.deck-discussion.text-scale-100 {
+  --text-scale: 1;
+}
+.deck-discussion.text-scale-130 {
+  --text-scale: 1.3;
+}
+.deck-discussion.text-scale-150 {
+  --text-scale: 1.5;
+}
+.deck-discussion h3,
+.deck-discussion .features legend,
+.deck-discussion .outline-field label,
+.deck-discussion label {
+  font-size: calc(13px * var(--text-scale));
+}
+.deck-discussion textarea,
+.deck-discussion input,
+.deck-discussion .summary input,
+.deck-discussion .summary textarea,
+.deck-discussion .discussion-editor textarea {
+  font-size: calc(13px * var(--text-scale));
+  line-height: 1.7;
+}
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Remaining Genspark credits under the e-mail address (v0.14.3). */
+.workspace-identity .credit-info {
+  grid-column: 1;
+  grid-row: 2;
+  font-size: 10px;
+  color: #1d6b55;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.workspace-identity .credit-info + .build-info {
+  grid-row: 3;
+}
+.workspace-identity:has(.credit-info) #settings {
+  grid-row: 1 / 4;
+}
+
+.workspace-identity .credit-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.credit-meter {
+  width: 100%;
+  min-width: 120px;
+  height: 7px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #e3ebe5;
+}
+.credit-meter::-webkit-meter-bar {
+  background: #e3ebe5;
+  border: 0;
+  border-radius: 4px;
+}
+.credit-meter::-webkit-meter-optimum-value {
+  background: #23a07a;
+}
+.credit-meter::-webkit-meter-suboptimum-value {
+  background: #e3a72f;
+}
+.credit-meter::-webkit-meter-even-less-good-value {
+  background: #d2513f;
+}
+.credit-meter::-moz-meter-bar {
+  background: #23a07a;
+}
+
+/* v0.15 ③ deck history: "デッキ＃n" icons and the new-deck button */
+.casino-deck .panel-title{flex-wrap:wrap;gap:8px}
+.deck-history{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.deck-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--line,#d8dce3);border-radius:999px;background:#fff;color:#2c3a33;font-size:12px;font-weight:600;line-height:1.4;white-space:nowrap;cursor:pointer}
+.deck-chip svg{width:14px;height:14px;flex:none}
+.deck-chip.active{border-color:#2f6fde;background:#eaf1ff;color:#1d4fae;cursor:default}
+button.deck-chip:not(.active):hover{border-color:#2f6fde}
+.deck-chip:disabled:not(.active){opacity:.55;cursor:not-allowed}
+.deck-pill{background:#eaf1ff;color:#1d4fae}
+/* v0.15.1 one AI character (set in 表示の設定) */
+.mascot-single .mascot-avatar{width:78px;height:78px}
+
+/* v0.17 ③: アイデアの輪郭 in two columns, then press release and paper prototype. */
+.idea-sheet form { display: grid; gap: 18px; }
+.idea-sheet .outline-panel { padding: 20px; }
+.outline-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.outline-columns > *, .generate-grid > * { min-width: 0; }
+.idea-sheet .features { display: grid; gap: 10px; border: 0; padding: 0; margin: 10px 0 0; }
+.idea-sheet .features legend { font-weight: bold; padding: 0; margin-bottom: 6px; }
+.idea-sheet .feature-line { min-height: 0; resize: vertical; overflow-wrap: anywhere; }
+.idea-sheet .outline-field input, .idea-sheet .outline-field textarea { width: 100%; box-sizing: border-box; }
+.generate-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.generate-block { padding: 20px; display: grid; gap: 10px; align-content: start; }
+.generate-block .generate-button { width: 100%; margin: 0; }
+.generate-block .press-release { min-height: 320px; }
+.prototype-result img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.prototype-result .image-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.prototype-result .empty { min-height: 200px; display: grid; place-items: center; text-align: center; }
+@media (max-width: 900px) {
+  .outline-columns, .generate-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- v0.18: UI spec Rev1 ------------------------------------------------- */
+/* #1–#3: the opening picture stays behind the login card and the workshop list. */
+#splash img {
+  object-fit: cover;
+}
+.opening {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: #2f2c7a url('/WorkShop_Top.png') center / cover no-repeat;
+}
+.opening-card {
+  width: min(430px, 100%);
+  padding: 36px 40px;
+  border-radius: 22px;
+  box-shadow: 0 20px 60px #0006;
+  box-sizing: border-box;
+}
+.opening-card h2 {
+  margin-top: 12px;
+}
+.workshop-list {
+  width: min(1060px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: #fbfaf6f7;
+  border-radius: 18px;
+  padding: 26px 32px;
+  box-shadow: 0 20px 60px #0006;
+  box-sizing: border-box;
+}
+.list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.list-head h1 {
+  font-size: 20px;
+  margin: 0 0 4px;
+}
+.list-head p {
+  margin: 0;
+  font-size: 12px;
+}
+.workshop-list h2 {
+  font-size: 16px;
+  margin: 22px 0 14px;
+}
+.workshop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: 24px 20px;
+}
+.workshop-card {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  min-width: 0;
+}
+.workshop-thumb {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  align-content: start;
+  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
+  padding: 44px 16px 16px 44px;
+  border-radius: 12px;
+  background:
+    linear-gradient(#fff, #fff) no-repeat 22px 22px / 100% 100%,
+    #fdf0c4;
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+.workshop-thumb i {
+  aspect-ratio: 1 / 1;
+  background: #efefea;
+  border-radius: 6px;
+}
+.workshop-card:hover .workshop-thumb,
+.workshop-card:focus-visible .workshop-thumb {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px #0003;
+}
+.workshop-card strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workshop-card small {
+  color: #7d8a7e;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workshop-card.deleted {
+  opacity: 0.55;
+}
+.workshop-list > .build-info {
+  margin-top: 22px;
+}
+/* Five steps; ① is the voice log. */
+.tabbar {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.tabbar .tab:nth-child(1) {
+  background: linear-gradient(105deg, #4d5762, #8a96a2);
+}
+.tabbar .tab:nth-child(2) {
+  background: linear-gradient(105deg, #007562, #0bac8c);
+}
+.tabbar .tab:nth-child(3) {
+  background: linear-gradient(105deg, #2b4386, #5c83b4);
+}
+.tabbar .tab:nth-child(4) {
+  background: linear-gradient(105deg, #735b22, #b39a4a);
+}
+.tabbar .tab:nth-child(5) {
+  background: linear-gradient(105deg, #863e2b, #ba7c59);
+}
+.tabbar.tab-tone-w {
+  border-bottom-color: #66727e;
+}
+.rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff4b4b;
+  box-shadow: 0 0 0 3px #ff4b4b55;
+  flex-shrink: 0;
+  animation: rec-blink 1.2s infinite;
+}
+.rec-dot[hidden] {
+  display: none;
+}
+@keyframes rec-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+/* Sidebar: the theme on top, no workshop list box, no status or version. */
+#app[data-view='workspace'] .sidebar {
+  gap: 14px;
+}
+.sidebar .workspace-tag {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 11px 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.to-list {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 5px;
+}
+/* ① voice log */
+.talk-view .transcript {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: max(240px, calc(100vh - 440px));
+}
+.talk-error {
+  color: #b3412f;
+}
+/* ④ deck, the outline on one screen, then the press release as a newspaper article. */
+.press-deck {
+  margin-bottom: 10px;
+}
+.press-sheet form {
+  gap: 12px;
+}
+.press-sheet .outline-panel {
+  padding: 14px 18px;
+  display: grid;
+  gap: 8px;
+}
+.outline-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.outline-row > * {
+  min-width: 0;
+}
+.press-sheet .features {
+  margin: 0;
+  display: block;
+}
+.press-sheet .feature-line {
+  width: 100%;
+  box-sizing: border-box;
+}
+.press-sheet .section-actions {
+  margin-top: 2px;
+}
+.press-button {
+  min-width: 230px;
+}
+.press-panel {
+  padding: 22px 28px;
+}
+.press-paper {
+  color: #1d1d1b;
+}
+.press-paper header {
+  border-bottom: 3px double #222;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+}
+.press-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: #8a2b1d;
+}
+.press-paper h2 {
+  font-family: 'Yu Gothic', 'YuGothic', 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+  font-weight: 900;
+  font-size: clamp(26px, 3vw, 40px);
+  line-height: 1.25;
+  margin: 8px 0 0;
+}
+.press-body {
+  font-family: 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'MS PMincho', serif;
+  font-size: 15px;
+  line-height: 1.75;
+  columns: 3 250px;
+  column-gap: 28px;
+  column-rule: 1px solid #d8d4c6;
+  text-align: justify;
+}
+.press-body p {
+  margin: 0 0 0.7em;
+  text-indent: 1em;
+}
+.press-body h4,
+.press-body p strong {
+  font-family: 'Yu Gothic', 'YuGothic', 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+}
+.press-body h4 {
+  font-size: 14px;
+  margin: 0.6em 0 0.3em;
+  break-after: avoid;
+}
+.press-edit {
+  margin-top: 14px;
+}
+.press-edit summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #5d6b60;
+}
+.press-edit textarea {
+  width: 100%;
+  min-height: 220px;
+  box-sizing: border-box;
+  margin-top: 8px;
+}
+/* ⑤ make the paper prototype, then compare and vote. */
+.proto-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+}
+.proto-bar h3 {
+  margin: 0 0 4px;
+}
+.proto-bar p {
+  margin: 0;
+}
+.proto-bar .generate-button {
+  width: auto;
+  flex-shrink: 0;
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .outline-row {
+    grid-template-columns: 1fr;
+  }
+  .press-body {
+    columns: 1;
+  }
+  .proto-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .opening-card {
+    padding: 28px 24px;
+  }
+  .workshop-list {
+    padding: 20px 18px;
+  }
+}
+/* ④ on one screen: a low deck, and labels beside their fields. */
+.workshop-list {
+  background: #fbfaf6;
+}
+.press-deck .casino-deck > .panel-title {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.press-deck .casino-deck .deck {
+  padding: 10px 16px 12px;
+}
+.press-deck .casino-deck .slot {
+  height: 112px;
+  min-height: 0;
+}
+.press-deck .casino-deck .deck-card p {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.press-sheet .outline-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.press-sheet .outline-field label {
+  margin: 0;
+  white-space: nowrap;
+}
+.press-sheet .outline-field input,
+.press-sheet .feature-line {
+  font-size: 0.85em;
+  line-height: 1.4;
+  padding: 5px 10px;
+}
+.press-sheet .features legend {
+  margin-bottom: 4px;
+}
+.press-sheet .discussion-heading h3 {
+  margin: 0;
+}
+.press-deck .casino-deck .slot {
+  height: 94px;
+}
+.press-sheet .outline-row:not(.features .outline-row) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr);
+}
+@media (max-width: 900px) {
+  .press-sheet .outline-row:not(.features .outline-row) {
+    grid-template-columns: 1fr;
+  }
+}
+.press-deck .casino-deck .deck {
+  min-height: 0;
+}
+
+/* ---- v0.19: AI chat pane, QR join screen ---------------------------------- */
+/* The chat is a pane on the right; the workspace gives it room. */
+#chat-pane {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(400px, 100vw);
+  box-sizing: border-box;
+  background: #fff;
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 30px #173a3918;
+  z-index: 60;
+  padding: 14px 16px;
+  color: #254537;
+}
+#chat-pane[hidden] {
+  display: none;
+}
+body.chat-open #app[data-view='workspace'] {
+  margin-right: min(400px, 100vw);
+}
+#chat-pane .character-chat {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+#chat-pane .chat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+}
+#chat-pane .chat-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+#chat-pane .character-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+#chat-pane .chat-context {
+  margin: 0;
+  font-size: 12px;
+}
+#chat-pane .chat-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  margin: 0;
+}
+#chat-pane .chat-message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#chat-pane #chat-error:empty {
+  display: none;
+}
+#chat-pane .quick-prompts {
+  margin: 0;
+}
+#chat-pane form {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+#chat-pane textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 84px;
+  resize: vertical;
+}
+#chat-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#chat-voice svg {
+  width: 18px;
+  height: 18px;
+}
+.chat-toggle {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 18px 6px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(105deg, #007562, #0bac8c);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  box-shadow: 0 8px 24px #0b5c4c55;
+  cursor: pointer;
+}
+.chat-toggle[hidden] {
+  display: none;
+}
+.chat-toggle .mascot-avatar {
+  width: 40px;
+  height: 40px;
+  background: #fff;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.chat-toggle .mascot-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* ① engine choice and the words being heard. */
+.talk-controls {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.talk-controls .talk-engine {
+  margin: 0;
+  font-size: 12px;
+}
+.talk-controls select {
+  width: auto;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.talk-interim {
+  color: #5d6b60;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  direction: rtl;
+  text-align: left;
+}
+.talk-view .transcript {
+  min-height: max(240px, calc(100vh - 300px));
+}
+/* The join screen to project (QR code, large). */
+dialog.qr-modal {
+  width: min(1500px, 96vw);
+  max-height: 96vh;
+  background: #f6ffed;
+  padding: 4vh 4vw;
+}
+.qr-screen h2 {
+  text-align: center;
+  font-size: clamp(26px, 3.6vw, 52px);
+  margin: 0 0 3vh;
+  padding: 0;
+  color: #6b5560;
+}
+.qr-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4vw;
+  align-items: center;
+}
+.qr-row img {
+  width: min(62vh, 44vw);
+  height: auto;
+  border-radius: 12px;
+  background: #fff;
+}
+.qr-name {
+  font-size: clamp(20px, 2.6vw, 38px);
+  font-weight: 700;
+  margin: 0 0 2vh;
+  overflow-wrap: anywhere;
+}
+.qr-steps {
+  font-size: clamp(16px, 1.8vw, 26px);
+  line-height: 1.9;
+  margin: 0 0 2vh;
+  padding-left: 1.4em;
+}
+.qr-url {
+  font-size: clamp(12px, 1.1vw, 16px);
+  color: #6b5560;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .qr-row {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  body.chat-open #app[data-view='workspace'] {
+    margin-right: 0;
+  }
+}
+
+/* ---- v0.20 --------------------------------------------------------------- */
+/* AI chat: smaller type, more on screen; proposals with an icon button. */
+#chat-pane .chat-log {
+  padding: 10px;
+}
+#chat-pane .chat-message p,
+#chat-pane .option-value,
+#chat-pane .chat-welcome,
+#chat-pane .chat-thinking {
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+#chat-pane .chat-message p {
+  margin: 2px 0 0;
+}
+#chat-pane .chat-message small,
+#chat-pane .chat-options small,
+#chat-pane .option-field,
+#chat-pane .chat-context {
+  font-size: 10.5px;
+}
+#chat-pane .chat-message .mascot-avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+}
+#chat-pane .chat-message .mascot-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+#chat-pane .chip,
+#chat-pane textarea,
+#chat-pane form button {
+  font-size: 12px;
+}
+#chat-pane .chat-options li {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 5px 6px 5px 9px;
+}
+#chat-pane .option-field,
+#chat-pane .chat-options small {
+  grid-column: 1 / -1;
+}
+#chat-pane .option-value {
+  font-weight: 600;
+  writing-mode: horizontal-tb;
+  min-width: 0;
+}
+.option-add {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #b9d3c4;
+  background: #fff;
+  color: #1c6b52;
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.option-add:hover:not(:disabled) {
+  background: #e3f1e8;
+}
+.option-add:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---- v0.21: working indicator, paper prototype button under the press release ---- */
+#busy {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 30px;
+  border-radius: 16px;
+  background: #173f39f2;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 20px 60px #0006;
+  max-width: 86vw;
+}
+#busy[hidden] {
+  display: none;
+}
+.spinner {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 4px solid #ffffff44;
+  border-top-color: #fff;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.proto-row {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  gap: 16px;
+  align-items: center;
+}
+.proto-row .generate-button {
+  width: auto;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+/* ---- v0.22 --------------------------------------------------------------- */
+/* Workshop list: the workshop's picture (generated image or its mind map). */
+.workshop-thumb {
+  position: relative;
+  overflow: hidden;
+}
+.workshop-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #fff;
+}
+/* Sidebar: icon tools right under the brand; ログ保存 beside the Notion status. */
+.sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sidebar-tools .toolbar-icon,
+.sidebar-tools .sidebar-toggle {
+  width: 34px;
+  height: 34px;
+  padding: 5px;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  align-self: auto;
+}
+.sidebar-tools button:hover {
+  background: #e7eee3;
+}
+.sidebar-tools svg {
+  width: 22px;
+  height: 22px;
+}
+.shell.sidebar-collapsed .sidebar > .sidebar-tools {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-foot {
+  display: grid;
+  gap: 8px;
+}
+.save-log {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 0;
+  background: #173f39;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.save-log:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.save-log svg {
+  width: 18px;
+  height: 18px;
+}
+/* ②: fold / unfold / zoom only; voting in the same bar as ⑤. */
+.map-tools-off {
+  display: none !important;
+}
+.map-panel .vote-bar .toolbar {
+  margin: 0;
+  padding: 6px 12px;
+}
+.map-panel .vote-bar .budget strong {
+  font-size: 24px;
+}
+.map-panel .vote-bar .clock {
+  font-size: 22px;
 }

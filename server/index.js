@@ -4,6 +4,7 @@ import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import QRCode from 'qrcode';
+import { mapThumbnail } from './thumbnail.js';
 import { Store, id, hash, normalizeEmail, passwordHash, newWorkshop } from './store.js';
 import { Auth, rateLimit } from './auth.js';
 import { AI } from './ai.js';
@@ -11,6 +12,9 @@ import { Notion } from './notion.js';
 import { validatePNG } from './png.js';
 import { Facilitator } from './facilitator.js';
 import { captureMap, recordMapUndo } from './map-history.js';
+import { audioType } from './audio.js';
+import { Join } from './join.js';
+import { ideaById, ideaImageKey, markIdeaDraft, saveIdea } from './ideas.js';
 import {
   Fault,
   requireThat,
@@ -67,6 +71,7 @@ export function createApp(config = configuration(), overrides = {}) {
     ai = new AI(store, config, overrides.aiTransport),
     notion = new Notion(store, config, overrides.notionTransport);
   const facilitator = new Facilitator(store, config, ai);
+  const joining = new Join(store, auth, config, notion);
   if (config.adminEmail && !store.get('users', config.adminEmail))
     store.put('users', config.adminEmail, {
       id: id(),
@@ -75,6 +80,50 @@ export function createApp(config = configuration(), overrides = {}) {
       passkeys: [],
       ...(config.adminPassword ? { password: passwordHash(config.adminPassword) } : {}),
     });
+  // AI settings are written into every Notion history entry (設定情報) and
+  // read back from the newest entry when they were edited in Notion.
+  // Global settings changed: refresh 「設定情報（アプリの最新設定）」 on every Notion-linked workshop.
+  const settingsChanged = () => {
+    for (const w of store.all('workshops')) if (w.notion && !w.deleted) notion.content.scheduleSettings(w);
+  };
+  notion.settingsProvider = () => {
+    const s = ai.settings();
+    return [
+      {
+        key: 'ai:pressReleasePrompt',
+        label: '模擬プレスリリース作成用プロンプト',
+        value: s.pressReleasePrompt,
+      },
+      { key: 'ai:imagePrompt', label: '企画提案シート作成用プロンプト', value: s.imagePrompt },
+      { key: 'ai:model', label: 'AIモデル（空欄＝Genspark既定）', value: s.model },
+      { key: 'ai:imageModel', label: '画像モデル（企画提案シート）', value: s.imageModel },
+      {
+        key: 'ai:facilitator',
+        label: 'AIファシリテータの動作（md）',
+        value: facilitator.document(),
+      },
+    ];
+  };
+  notion.settingsConsumer = (rows) => {
+    const value = (key) => rows.find((r) => r.key === key)?.value;
+    const current = ai.settings();
+    const next = {
+      ...current,
+      ...(value('ai:pressReleasePrompt') !== undefined
+        ? { pressReleasePrompt: value('ai:pressReleasePrompt') }
+        : {}),
+      ...(value('ai:imagePrompt') !== undefined ? { imagePrompt: value('ai:imagePrompt') } : {}),
+      ...(value('ai:model') !== undefined ? { model: value('ai:model') } : {}),
+    };
+    try {
+      if (JSON.stringify(next) !== JSON.stringify(current)) ai.save(next);
+      const md = value('ai:facilitator');
+      if (md && md !== facilitator.document())
+        facilitator.save({ version: facilitator.settings().version, markdown: md }, 'notion');
+    } catch (e) {
+      console.error('Notion settings ignored:', e.message);
+    }
+  };
   let remoteWrite = false;
   const available = () =>
     requireThat(
@@ -82,6 +131,41 @@ export function createApp(config = configuration(), overrides = {}) {
       'Notionと同期しています。少し待って再操作してください',
       409,
     );
+  // ① voice log: new words join the team's record. When the record is full, its older part
+  // is replaced by a compact AI summary (or dropped if the AI fails), so recording never stops.
+  const TRANSCRIPT_MAX = 100000,
+    TRANSCRIPT_KEEP = 60000;
+  const tailText = (v) => [...String(v).trim()].slice(-TRANSCRIPT_MAX).join('');
+  const grownTranscript = async (current, words, email) => {
+    const all = [...`${current}\n${words}`.trim()];
+    if (all.length <= TRANSCRIPT_MAX) return all.join('');
+    let summary = '';
+    try {
+      const r = await ai.run(
+        'summarize',
+        { mode: 'compact', transcript: all.slice(0, all.length - TRANSCRIPT_KEEP).join('') },
+        email,
+      );
+      summary = [...String(r?.text || '').trim()].slice(0, 6000).join('');
+    } catch {}
+    return (
+      (summary ? `【ここまでの議論の要約】\n${summary}\n\n【続きの記録】\n` : '') +
+      all.slice(-TRANSCRIPT_KEEP).join('')
+    );
+  };
+  // The QR code as an SVG picture, drawn from the code's own squares. (The library's PNG
+  // output needs Node's zlib streams, which a Cloudflare Worker does not have.)
+  const qrSvgDataUrl = (value) => {
+    const { size, data } = QRCode.create(value, { errorCorrectionLevel: 'M' }).modules,
+      margin = 3;
+    let path = '';
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++)
+        if (data[y * size + x]) path += `M${x + margin} ${y + margin}h1v1h-1z`;
+    const side = size + margin * 2;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${side} ${side}" shape-rendering="crispEdges"><rect width="${side}" height="${side}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+    return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64');
+  };
   const remote = async (fn) => {
     available();
     remoteWrite = true;
@@ -148,7 +232,11 @@ export function createApp(config = configuration(), overrides = {}) {
           '/fonts/BIZUDPGothic-Regular.ttf': 'public/fonts/BIZUDPGothic-Regular.ttf',
           '/fonts/BIZUDPGothic-Bold.ttf': 'public/fonts/BIZUDPGothic-Bold.ttf',
         };
-        const file = assets[path];
+        const file =
+          assets[path] ||
+          (/^\/characters\/(kashi|leafy)-(idle|thinking|speaking|insight)\.png$/.test(path)
+            ? 'public' + path
+            : undefined);
         requireThat(file && existsSync(join(root, file)), 'ファイルがありません', 404);
         res.setHeader(
           'Content-Type',
@@ -186,7 +274,8 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (path === '/api/auth/start' && req.method === 'POST') {
-        rateLimit(store, `login-start:${ip}`, 20, 600000);
+        // A whole room logs in from one network address.
+        rateLimit(store, `login-start:${ip}`, 300, 600000);
         if (notion.enabled() && !remoteWrite) {
           // Verify mailbox ownership even during a Notion outage. Workshop access
           // still requires fresh membership data and fails closed in access().
@@ -196,11 +285,24 @@ export function createApp(config = configuration(), overrides = {}) {
             /* Persisted sync state is shown after login. */
           }
         }
-        json(res, await auth.start(body, ip));
+        json(res, await auth.start(body, ip, req, res));
+        return;
+      }
+      if (path === '/api/join/start' && req.method === 'POST') {
+        json(res, await joining.start(body, ip));
+        return;
+      }
+      if (path === '/api/join/verify' && req.method === 'POST') {
+        rateLimit(store, `join-verify:${ip}`, 600, 600000);
+        json(res, await joining.verify(body, res, remote));
+        return;
+      }
+      if (path === '/api/join/status' && req.method === 'GET') {
+        json(res, joining.status(req, res));
         return;
       }
       if (path === '/api/auth/verify' && req.method === 'POST') {
-        rateLimit(store, `verify:${ip}`, 40, 600000);
+        rateLimit(store, `verify:${ip}`, 600, 600000);
         json(res, auth.verify(body, res));
         return;
       }
@@ -247,6 +349,8 @@ export function createApp(config = configuration(), overrides = {}) {
           ai: ai.publicSettings(),
           facilitator: facilitator.settings(),
           notion: user.admin ? notion.status() : notion.connectionState(),
+          // Admins see the remaining Genspark credits; refreshed at most every 5 minutes.
+          credit: user.admin && ai.gskKey() ? (void ai.refreshCredit(), ai.creditStatus()) : undefined,
         });
         return;
       }
@@ -271,7 +375,20 @@ export function createApp(config = configuration(), overrides = {}) {
       }
       if (path === '/api/ai/settings' && req.method === 'POST') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
-        json(res, ai.save(body));
+        const saved = ai.save(body);
+        settingsChanged();
+        json(res, saved);
+        return;
+      }
+      if (path === '/api/ai/diagnose' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        rateLimit(store, `ai-diagnose:${user.email}`, 10, 600000);
+        json(res, await ai.diagnose());
+        return;
+      }
+      if (path === '/api/ai/image-models' && req.method === 'GET') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        json(res, await ai.imageModels());
         return;
       }
       if (path === '/api/ai/connect' && req.method === 'POST') {
@@ -280,12 +397,26 @@ export function createApp(config = configuration(), overrides = {}) {
         json(res, await ai.connect(body.apiKey));
         return;
       }
+      if (path === '/api/ai/login/start' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        rateLimit(store, `ai-login:${user.email}`, 5, 600000);
+        json(res, await ai.beginLogin(user.email));
+        return;
+      }
+      if (path === '/api/ai/login/poll' && req.method === 'POST') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        requireThat(
+          typeof body.requestId === 'string' && body.requestId.length <= 100,
+          '認証IDが不正です',
+        );
+        json(res, await ai.finishLogin(body.requestId, user.email));
+        return;
+      }
       if (path === '/api/facilitator') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
-        json(
-          res,
-          req.method === 'POST' ? facilitator.save(body, user.email) : facilitator.settings(true),
-        );
+        const result = req.method === 'POST' ? facilitator.save(body, user.email) : facilitator.settings(true);
+        if (req.method === 'POST') settingsChanged();
+        json(res, result);
         return;
       }
       if (path === '/api/facilitator/export' && req.method === 'GET') {
@@ -371,8 +502,73 @@ export function createApp(config = configuration(), overrides = {}) {
         return;
       }
       if (route === 'advice' && req.method === 'POST') {
-        rateLimit(store, `facilitation:${user.email}`, 40, 600000);
+        rateLimit(store, `facilitation:${user.email}`, 40, 600000, { memory: true });
         json(res, await facilitator.advise(ws, user, body));
+        return;
+      }
+      if (route === 'join-requests' && req.method === 'GET') {
+        json(res, joining.pending(ws, user));
+        return;
+      }
+      if (route === 'join-approve' && req.method === 'POST') {
+        available();
+        json(res, await remote(() => joining.decide(ws, user, body)));
+        return;
+      }
+      if (route === 'qr-data' && req.method === 'GET') {
+        requireThat(user.admin, '管理者のみ操作できます', 403);
+        json(res, {
+          url: `${config.origin}/?join=${encodeURIComponent(ws.id)}`,
+          dataUrl: qrSvgDataUrl(`${config.origin}/?join=${encodeURIComponent(ws.id)}`),
+        });
+        return;
+      }
+      // The picture on the workshop list: a generated image if there is one, else the map.
+      if (route === 'thumb' && req.method === 'GET') {
+        let png = null;
+        for (const t of Object.values(ws.teams)) {
+          const idea = [...(t.ideas || [])].reverse().find((i) => i.image);
+          png =
+            t.image?.base64 ||
+            (idea && store.get('kv', ideaImageKey(ws.id, idea.image.key))?.base64) ||
+            null;
+          if (png) break;
+        }
+        const svg = png ? null : mapThumbnail(ws);
+        requireThat(png || svg, 'サムネイルがありません', 404);
+        res.setHeader('Content-Type', png ? 'image/png' : 'image/svg+xml; charset=utf-8');
+        res.end(png ? Buffer.from(png, 'base64') : svg);
+        return;
+      }
+      if (route === 'idea-image' && req.method === 'GET') {
+        const found = ideaById(ws, url.searchParams.get('idea')),
+          image = found?.idea.image && store.get('kv', ideaImageKey(ws.id, found.idea.image.key));
+        requireThat(image, '画像がありません', 404);
+        res.setHeader('Content-Type', 'image/png');
+        res.end(Buffer.from(image.base64, 'base64'));
+        return;
+      }
+      if (route === 'idea-restore' && req.method === 'POST') {
+        access(store, ws, user, true);
+        teamFor(ws, user, body.teamId);
+        let source = 'saved-pending';
+        if (ws.notion && !ws.documentSync?.pending && !notion.content.active.has(ws.id)) {
+          await notion.content.pull(ws, undefined, true);
+          ws = store.get('workshops', ws.id);
+          source = 'notion';
+          requireThat(
+            !ws.documentSync?.error,
+            ws.documentSync?.error || 'Notionの記録を読み込めません',
+            409,
+          );
+        }
+        const restored = mutate(store, user, ws.id, {
+          action: 'restoreIdea',
+          payload: { teamId: body.teamId, ideaId: body.ideaId },
+          revision: ws.revision,
+          requestId: body.requestId,
+        });
+        json(res, { ...view(restored, user), restoreSource: source });
         return;
       }
       if (route === 'advice-feedback' && req.method === 'POST') {
@@ -453,7 +649,7 @@ export function createApp(config = configuration(), overrides = {}) {
       if (route === 'qr' && req.method === 'GET') {
         requireThat(user.admin, '管理者のみ操作できます', 403);
         res.setHeader('Content-Type', 'image/png');
-        res.end(await QRCode.toBuffer(`${config.origin}/?workshop=${encodeURIComponent(ws.id)}`));
+        res.end(await QRCode.toBuffer(`${config.origin}/?join=${encodeURIComponent(ws.id)}`));
         return;
       }
       if (route === 'publish' && req.method === 'POST') {
@@ -493,10 +689,35 @@ export function createApp(config = configuration(), overrides = {}) {
         res.end(image ? Buffer.from(team.image.base64, 'base64') : markdown(ws, team));
         return;
       }
+      // ① voice log typed by the browser's own speech recognition (no AI credits).
+      if (route === 'transcript' && req.method === 'POST') {
+        access(store, ws, user, true);
+        const before = teamFor(ws, user, body.teamId).discussion.transcript;
+        const words = text(body.text, 5000);
+        requireThat(words, '追加する文字がありません');
+        rateLimit(store, `voice-text:${user.email}`, 200, 600000);
+        const next = await grownTranscript(before, words, user.email);
+        ws = store.get('workshops', wsId);
+        access(store, ws, user, true);
+        const team = teamFor(ws, user, body.teamId);
+        // Someone else added words while the summary was being made: keep theirs too.
+        team.discussion.transcript =
+          team.discussion.transcript === before
+            ? next
+            : tailText(`${team.discussion.transcript}\n${words}`);
+        ws.revision++;
+        store.put('workshops', ws.id, ws);
+        if (ws.notion)
+          ws = notion.content.schedule(ws, body.teamId, 'auto', Date.now(), undefined, 600000);
+        json(res, view(ws, user));
+        return;
+      }
       if (route === 'ai' && req.method === 'POST') {
         access(store, ws, user, true);
         const team = teamFor(ws, user, body.teamId);
-        rateLimit(store, `ai:${user.email}`, 30, 600000);
+        // ① sends one recording a minute while it is on; it has its own allowance.
+        if (body.task === 'transcribe') rateLimit(store, `ai-voice:${user.email}`, 40, 600000);
+        else rateLimit(store, `ai:${user.email}`, 30, 600000);
         const revision = ws.revision;
         let input = {
           theme: team.rootText || ws.theme,
@@ -506,9 +727,7 @@ export function createApp(config = configuration(), overrides = {}) {
         };
         if (body.task === 'transcribe') {
           requireThat(
-            ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/webm;codecs=opus'].includes(
-              body.mimeType,
-            ) &&
+            audioType(body.mimeType).extension &&
               typeof body.audio === 'string' &&
               body.audio.length < 8 * 1024 * 1024 &&
               ['map', 'discussion'].includes(body.destination),
@@ -520,7 +739,8 @@ export function createApp(config = configuration(), overrides = {}) {
         ws = store.get('workshops', wsId);
         access(store, ws, user, true);
         teamFor(ws, user, body.teamId);
-        requireThat(ws.revision === revision, 'AI処理中に更新されました。再実行してください', 409);
+        // Image generation takes minutes and other teams keep editing meanwhile, so a
+        // workshop-wide revision change must not throw the (already paid) result away.
         const proposal = id();
         store.put('challenges', proposal, {
           type: 'ai',
@@ -543,14 +763,19 @@ export function createApp(config = configuration(), overrides = {}) {
           p?.type === 'ai' && p.email === user.email && p.wsId === wsId && p.expires > Date.now(),
           '提案が無効または期限切れです',
         );
-        requireThat(ws.revision === p.revision, '別の更新があるため再実行してください', 409);
         const team = teamFor(ws, user, p.teamId),
           r = p.result;
         const mapBefore = captureMap(ws, team);
         if (p.task === 'image') {
-          team.image = validatePNG(r.pngBase64);
-          if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[team.id];
-          for (const ballot of Object.values(ws.votes.ideas)) delete ballot[team.id];
+          // Non-PNG results (JPEG/WebP) arrive converted to PNG by the reviewing browser.
+          team.image = validatePNG(typeof r.pngBase64 === 'string' ? r.pngBase64 : body.pngBase64);
+          // The image belongs to the current deck, which ④ shows as its own entry; a new
+          // image starts that deck's votes again.
+          const idea = saveIdea(store, ws, team);
+          for (const key of [team.id, idea.id]) {
+            if (ws.notionVoteBaseline?.ideas) delete ws.notionVoteBaseline.ideas[key];
+            for (const ballot of Object.values(ws.votes.ideas)) delete ballot[key];
+          }
         } else if (p.task === 'transcribe') {
           if (p.destination === 'map') {
             requireThat(team.nodes.length < 500, '項目は500件以内です');
@@ -558,9 +783,11 @@ export function createApp(config = configuration(), overrides = {}) {
             requireThat(words, '文字起こしが空でした');
             team.nodes.push({ id: id(), text: words, parent: null, group: 0 });
           } else
-            team.discussion.transcript = text(
-              `${team.discussion.transcript}\n${text(r.text, 30000)}`,
-              30000,
+            // ① keeps recording for hours: when the log is full, the oldest part goes.
+            team.discussion.transcript = await grownTranscript(
+              team.discussion.transcript,
+              text(r.text, 30000),
+              user.email,
             );
         } else if (p.task === 'summarize') {
           for (const [key, max] of Object.entries({
@@ -572,6 +799,11 @@ export function createApp(config = configuration(), overrides = {}) {
             keywords: 500,
           }))
             if (r[key] !== undefined) team.discussion[key] = text(r[key], max);
+          // 「たたき台を生成」 also drafts the three features, one line each.
+          if (Array.isArray(r.features))
+            team.discussion.features = [0, 1, 2].map((i) =>
+              [...String(r.features[i] ?? '').replace(/\s*\n\s*/g, ' ').trim()].slice(0, 200).join(''),
+            );
         } else if (p.task === 'pressRelease') {
           team.discussion.pressRelease = text(r.text, 2000);
           requireThat(team.discussion.pressRelease, '原稿が返りませんでした', 502);
@@ -599,9 +831,23 @@ export function createApp(config = configuration(), overrides = {}) {
         ws.revision++;
         store.put('workshops', ws.id, ws);
         store.del('challenges', body.proposal);
-        if (ws.notion && notion.content.state(ws)?.doc) {
-          ws = notion.content.schedule(ws);
-        }
+        // v0.14: a generated image is recorded in the Notion history.
+        if (ws.notion && p.task === 'image') ws = notion.content.schedule(ws, p.teamId, 'image');
+        // Discussion results reach the Notion history without pressing 「記録を保存」.
+        else if (
+          ws.notion &&
+          (['summarize', 'pressRelease', 'keywords'].includes(p.task) ||
+            (p.task === 'transcribe' && p.destination !== 'map'))
+        )
+          // The voice log grows every minute; Notion gets it at most every 10 minutes.
+          ws = notion.content.schedule(
+            ws,
+            p.teamId,
+            'auto',
+            Date.now(),
+            undefined,
+            p.task === 'transcribe' ? 600000 : undefined,
+          );
         json(res, view(ws, user));
         return;
       }
