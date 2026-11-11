@@ -823,7 +823,7 @@ test('DOM: 4タブ・管理者設定・マップから付箋・デッキ・議�
     [...f.doc.querySelectorAll('.board-actions > button, .board-actions > span:not([hidden])')].map(
       (b) => b.id,
     ),
-    ['collapse-all', 'expand-all', 'zoom-out', 'zoom-label', 'fit-map', 'zoom-in'],
+    ['tb-add-sibling', 'tb-add-child', 'collapse-all', 'expand-all', 'zoom-out', 'zoom-label', 'fit-map', 'zoom-in'],
   );
   assert.equal(f.doc.querySelector('#new-topic').closest('[hidden]').className, 'map-tools-off');
   assert.match(f.doc.querySelector('.map-panel .vote-bar').textContent, /残り.*票.*VOTING TIME/s);
