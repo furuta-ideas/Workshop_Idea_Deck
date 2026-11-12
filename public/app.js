@@ -188,15 +188,28 @@ function clearDraft() {
   drafts.delete(`${ws.id}/${teamId}/${tab}`);
   editing = false;
 }
+// A 409 means the workshop changed meanwhile (voice log, AI, Notion, another person). For
+// whole-form saves the user's input is what counts: retry once on the latest revision.
+async function postAction(wsId, action, payload) {
+  const send = (revision) =>
+    api(`/api/workshops/${wsId}/action`, {
+      action,
+      payload,
+      revision,
+      requestId: crypto.randomUUID(),
+    });
+  try {
+    return await send(ws.revision);
+  } catch (e) {
+    if (e.status !== 409 || !['discussion', 'settings', 'timer'].includes(action)) throw e;
+    const latest = await api(`/api/workshops/${wsId}`);
+    return send(latest.revision);
+  }
+}
 async function action(action, payload) {
   const activeWs = ws.id,
     activeTeam = teamId;
-  const result = await api(`/api/workshops/${ws.id}/action`, {
-    action,
-    payload,
-    revision: ws.revision,
-    requestId: crypto.randomUUID(),
-  });
+  const result = await postAction(ws.id, action, payload);
   if (ws?.id !== activeWs || teamId !== activeTeam) return result;
   ws = result;
   pending = null;
@@ -1430,12 +1443,7 @@ async function saveOutline() {
   if (!editing || !$('#discussion-form') || !editableTeam()) return;
   const activeWs = ws.id,
     activeTeam = teamId;
-  const result = await api(`/api/workshops/${ws.id}/action`, {
-    action: 'discussion',
-    payload: { teamId, ...discussionValues() },
-    revision: ws.revision,
-    requestId: crypto.randomUUID(),
-  });
+  const result = await postAction(ws.id, 'discussion', { teamId, ...discussionValues() });
   if (ws?.id !== activeWs || teamId !== activeTeam) return;
   ws = result;
   pending = null;

@@ -123,6 +123,18 @@ export function createWorkshop(store, user, body) {
   store.put('workshops', ws.id, ws);
   return ws;
 }
+const idKeyedActions = new Set([
+  'node',
+  'createTopic',
+  'pasteOutline',
+  'topicTheme',
+  'reorderTopic',
+  'reparent',
+  'standalone',
+  'deleteNode',
+  'deck',
+  'saveIdea',
+]);
 export function mutate(store, user, wsId, body) {
   return store.tx(() => {
     const ws = store.get('workshops', wsId);
@@ -133,7 +145,9 @@ export function mutate(store, user, wsId, body) {
       '操作IDが必要です',
     );
     if (store.get('requests', requestKey)) return ws;
-    if (body.action !== 'vote')
+    // Actions addressed by ids (a topic, a card, a deck) cannot clobber someone else's work, so a
+    // revision bumped meanwhile by voice logging, AI, Notion or other people must not reject them.
+    if (body.action !== 'vote' && !idKeyedActions.has(body.action))
       requireThat(
         body.revision === ws.revision,
         '別の参加者が更新しました。最新の内容を読み直してください。入力は保存されていません',

@@ -225,8 +225,14 @@ test('親子の循環を拒否・競合更新は409・不正入力は全体を�
     f.act(f.editor, 'node', { teamId: f.team.id, id: a.id, text: a.text, parent: b.id }),
   );
   assert.throws(
-    () => f.act(f.editor, 'node', { teamId: f.team.id, text: '古い更新' }, 1),
+    () => f.act(f.editor, 'discussion', { teamId: f.team.id, what: '古い更新' }, 1),
     (e) => e.status === 409,
+  );
+  // id-keyed topic edits are not rejected just because the revision moved on meanwhile.
+  f.act(f.editor, 'node', { teamId: f.team.id, id: b.id, text: '古い画面からの更新', parent: a.id }, 1);
+  assert.equal(
+    f.store.get('workshops', f.ws.id).teams[f.team.id].nodes.find((n) => n.id === b.id).text,
+    '古い画面からの更新',
   );
   const before = f.store.get('workshops', f.ws.id);
   assert.throws(() =>
