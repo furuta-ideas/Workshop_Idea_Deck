@@ -2,7 +2,7 @@
 
 ## v0.12：Genspark専用接続
 
-現在はAIアドバイス・分類・録音文字起こし・文章・画像をすべてGenspark経由に限定します。画像モデルは`gpt-image-2.5`です。管理者設定の「Genspark GSK APIキー」に有効なキーを登録すると、公式GSK APIを使います。確認に成功したキーだけを非公開の永続ストレージへ保存し、API応答・画面・監査ログへ返しません。既存の社内Genspark Gatewayも継続できます。
+現在はAIアドバイス・分類・録音文字起こし・文章・画像をすべてGenspark経由に限定します。画像モデルは管理者設定の「画像モデル」で指定します（既定 `gpt-image-2.5`）。「Gensparkで使えるか確認」でGensparkの最新モデル一覧（`GET /api/tool_cli/tools`）と照合できます。管理者設定の「Genspark GSK APIキー」に有効なキーを登録すると、公式GSK APIを使います。確認に成功したキーだけを非公開の永続ストレージへ保存し、API応答・画面・監査ログへ返しません。既存の社内Genspark Gatewayも継続できます。
 
 公式GSKの文章接続は`GET https://www.genspark.ai/api/tool_cli/opencode-config`で許可モデルとプロキシURLを取得し、そのGensparkドメインのOpenAI互換APIへ送ります。画像は`POST /api/tool_cli/image_generation`（model=`gpt-image-2.5`, aspect_ratio=`16:9`, image_size=`2k`, tier=`flare`）。録音は公式の`file/upload_url`と非公開ストレージを経て`audio_transcribe`を使います。GSKのNDJSON最終応答を読み、失敗時は再送・別AIへの切替を行いません。
 

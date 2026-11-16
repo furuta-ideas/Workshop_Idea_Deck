@@ -1,6 +1,6 @@
 import { id, newWorkshop, newTeam, normalizeEmail } from './store.js';
 import { requireThat, Fault, expire, markdown } from './domain.js';
-import { NotionContent, stageTitles } from './notion-content.js';
+import { NotionContent } from './notion-content.js';
 
 const rt = (content) => [{ type: 'text', text: { content } }];
 const title = (p) => (p?.title || []).map((x) => x.plain_text || x.text?.content || '').join('');
@@ -22,10 +22,18 @@ const visibleState = (w) =>
 export const participantSchema = {
   名前: { title: {} },
   選択: { select: { options: ['管理者', '編集者', '閲覧者'].map((name) => ({ name })) } },
-  グループ: { select: { options: [] } },
   OTP認証結果: { select: { options: [{ name: '認証済' }] } },
   OTP認証日時: { date: {} },
 };
+// The participants DB may use select or multi_select for グループ (people often
+// switch it in Notion). Read the first group either way and write in the DB's type.
+const groupTypes = ['select', 'multi_select'];
+export const groupName = (prop) =>
+  prop?.type === 'multi_select' || Array.isArray(prop?.multi_select)
+    ? prop.multi_select?.[0]?.name
+    : prop?.select?.name;
+const groupValue = (type, name) =>
+  type === 'multi_select' ? { multi_select: name ? [{ name }] : [] } : { select: name ? { name } : null };
 export class Notion {
   constructor(store, config, transport = fetch) {
     this.store = store;
@@ -149,15 +157,16 @@ export class Notion {
     for (const [name, type] of Object.entries({
       名前: 'title',
       選択: 'select',
-      グループ: 'select',
       OTP認証結果: 'select',
       OTP認証日時: 'date',
     }))
       requireThat(
-        schema.properties?.[name]?.type === type,
-        `参加者DBの「${name}」を${type}型で用意してください`,
+        [type].flat().includes(schema.properties?.[name]?.type),
+        `参加者DBの「${name}」を${[type].flat().join('または')}型で用意してください`,
         409,
       );
+    // v0.19: グループ is optional and no longer written; team assignment is gone.
+    ws.notion.groupType = schema.properties.グループ?.type || null;
     const rows = await this.list(`data_sources/${source}/query`, 'POST'),
       members = {};
     const liveTeams = this.store.get('workshops', ws.id)?.teams || {};
@@ -170,7 +179,7 @@ export class Notion {
       )
         continue;
       requireThat(!members[email], '参加者メールが重複しています。Notion側で修正してください', 409);
-      const group = row.properties.グループ?.select?.name;
+      const group = groupName(row.properties.グループ);
       let team =
         Object.values(liveTeams).find((t) => t.name === group) ||
         Object.values(ws.teams).find((t) => t.name === group);
@@ -188,6 +197,9 @@ export class Notion {
       };
       this.store.put('users', email, user);
     }
+    // People who joined by QR code and are not in Notion's list yet stay members.
+    for (const [email, member] of Object.entries(ws.members || {}))
+      if (member.local && !members[email]) members[email] = member;
     ws.members = members;
   }
   meta(page) {
@@ -195,7 +207,6 @@ export class Notion {
       name: title(page.properties.名前),
       endDate: page.properties.終了日?.date?.end || page.properties.終了日?.date?.start || null,
       status: page.properties.ステータス?.status?.name || '未着手',
-      deleted: !!(page.archived || page.in_trash),
     };
   }
   properties(ws) {
@@ -265,17 +276,15 @@ export class Notion {
   async provision(ws) {
     if (ws.notion.templateId) {
       const blocks = await this.list(`blocks/${ws.notion.pageId}/children`);
-      const ready =
-        stageTitles.every((_, i) =>
-          blocks.some(
-            (b) => /^heading_/.test(b.type) && blockTitle(b).trim().startsWith('①②③④'[i]),
-          ),
-        ) &&
-        blocks.some((b) => b.type === 'child_database' && participantName(b.child_database.title));
+      // v0.14: the template needs only the participant list; the history
+      // heading is created on the first save if it is missing.
+      const ready = blocks.some(
+        (b) => b.type === 'child_database' && participantName(b.child_database.title),
+      );
       if (!ready) {
         requireThat(
           Date.now() - ws.notion.templateStartedAt < 600000,
-          'テンプレートの展開が完了しません。①〜④の見出しと参加者一覧DBを確認してください',
+          'テンプレートの展開が完了しません。参加者一覧DBを確認してください',
           409,
         );
         return false;
@@ -292,15 +301,15 @@ export class Notion {
     const source = await this.sourceFor(ws, true);
     const existing = await this.list(`data_sources/${source}/query`, 'POST');
     for (const [email, member] of Object.entries(ws.members)) {
-      if (!existing.some((p) => normalizeEmail(title(p.properties.名前)) === email))
+      if (!existing.some((p) => normalizeEmail(title(p.properties.名前)) === email)) {
         await this.call('pages', 'POST', {
           parent: { type: 'data_source_id', data_source_id: source },
           properties: {
             名前: { title: rt(email) },
             選択: { select: { name: member.role } },
-            グループ: { select: member.teamId ? { name: ws.teams[member.teamId].name } : null },
           },
         });
+      }
     }
     if (ws.notion.templateId) {
       await this.pullMembers(ws);
@@ -312,13 +321,12 @@ export class Notion {
       this.store.put('workshops', ws.id, ws);
       const imported = await this.content.pull(ws, undefined, true);
       requireThat(
-        imported && !ws.documentSync?.error,
-        ws.documentSync?.error || 'テンプレート本文を読み込めません',
+        imported && !ws.documentSync?.readError,
+        ws.documentSync?.readError || 'テンプレート本文を読み込めません',
         409,
       );
       ws = this.store.get('workshops', ws.id);
-      for (const team of Object.values(ws.teams)) team.rootText = ws.theme;
-      this.content.schedule(ws);
+      for (const team of Object.values(ws.teams)) team.rootText ||= ws.theme;
     }
     ws.notion.provisioning = false;
     delete ws.notion.error;
@@ -424,7 +432,8 @@ export class Notion {
         const baseline = structuredClone(ws);
         try {
           const p = await this.call(`pages/${ws.notion.pageId}`);
-          Object.assign(ws, this.meta(p));
+          // Removed from the list in Notion: the workshop in the app stays as it is.
+          if (!p.archived && !p.in_trash) Object.assign(ws, this.meta(p));
           ws.notion.checkedAt = Date.now();
           this.commitPoll(ws, baseline);
         } catch {
@@ -467,9 +476,7 @@ export class Notion {
     const state =
       sync.error || workshops.some((w) => w.notion.error || w.notion.conflict)
         ? 'error'
-        : Date.now() - sync.at >= 60000
-          ? 'stale'
-          : 'ready';
+        : 'ready';
     return { enabled: true, state, at: sync.at };
   }
   async resolve(wsId, choice) {
@@ -492,13 +499,52 @@ export class Notion {
     this.store.put('workshops', ws.id, ws);
     return this.sync();
   }
+  // The workshop's page in Notion, for the export. Made when the workshop has none yet, or
+  // when the old one was removed in Notion.
+  async ensurePage(ws) {
+    requireThat(this.enabled(), 'Notion連携が未設定です', 503);
+    if (ws.notion?.pageId) {
+      try {
+        const page = await this.call(`pages/${ws.notion.pageId}`);
+        if (!page.archived && !page.in_trash) return ws;
+      } catch (e) {
+        // Notion itself is in trouble: say so. A page that is gone (404) is made again.
+        if (!e.notionStatus || e.notionStatus === 429 || e.notionStatus >= 500) throw e;
+      }
+    }
+    const page = await this.call('pages', 'POST', {
+      parent: { type: 'data_source_id', data_source_id: this.config.notionSource },
+      properties: this.properties(ws),
+    });
+    const latest = this.store.get('workshops', ws.id);
+    latest.notion = { pageId: page.id, baseEdited: page.last_edited_time, checkedAt: Date.now() };
+    latest.dirty = false;
+    latest.revision++;
+    this.store.put('workshops', latest.id, latest);
+    // The record of the old page does not describe the new one.
+    this.store.del('kv', `notion-content:${ws.id}`);
+    return latest;
+  }
+  // Add the members Notion's participants list does not have yet (QR code joiners).
+  async pushMembers(ws) {
+    const source = await this.sourceFor(ws);
+    const rows = await this.list(`data_sources/${source}/query`, 'POST');
+    const listed = new Set(
+      rows.filter((x) => !x.archived && !x.in_trash).map((p) => normalizeEmail(title(p.properties.名前))),
+    );
+    for (const [email, member] of Object.entries(ws.members))
+      if (!listed.has(email))
+        await this.call('pages', 'POST', {
+          parent: { type: 'data_source_id', data_source_id: source },
+          properties: { 名前: { title: rt(email) }, 選択: { select: { name: member.role } } },
+        });
+  }
   async setMember(ws, email, member) {
     const source = await this.sourceFor(ws);
     const old = ws.members[email];
     const properties = {
       名前: { title: rt(email) },
       選択: { select: { name: member.role } },
-      グループ: { select: member.teamId ? { name: ws.teams[member.teamId].name } : null },
     };
     await this.call(
       old?.notionPageId ? `pages/${old.notionPageId}` : 'pages',
